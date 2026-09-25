@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { createDb, createPool } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import { provisionPgBossRole, provisionRuntimeRole, runtimeCredentials } from "./db/provision.js";
+import { provisionInstallTimePrincipals } from "./db/provision-install.js";
 import {
   assertNoVersionSkewOrThrow,
   isMissingHeartbeatTable,
@@ -41,6 +42,9 @@ async function main(): Promise<void> {
     await provisionRuntimeRole(adminPool, creds.user, creds.password);
     const pgBossCreds = runtimeCredentials(config.pgBossDatabaseUrl);
     await provisionPgBossRole(adminPool, pgBossCreds.user, pgBossCreds.password);
+    for (const line of await provisionInstallTimePrincipals(adminPool, config)) {
+      console.log(`[migrate-bin] ${line}.`);
+    }
     console.log("[migrate-bin] runtime roles provisioned. done.");
   } finally {
     await adminPool.end();

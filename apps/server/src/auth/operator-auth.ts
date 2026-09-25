@@ -9,10 +9,12 @@ import { instanceOperatorCredentials } from "../db/schema.js";
 import { forbidden } from "../errors.js";
 import { withOperatorDb } from "../routes/operator-db.js";
 import type { AppDeps } from "../types.js";
+import type pg from "pg";
 import {
   generateTokenId,
   generateTokenSecret,
   mintPrefixedToken,
+  parsePrefixedToken,
   verifyPrefixedToken
 } from "./prefixed-token.js";
 
@@ -115,6 +117,82 @@ export async function revokeOperatorCredential(config: ServerConfig, id: string)
     );
     return (res.rowCount ?? 0) > 0;
   });
+}
+
+/** The name the install-time stack-controller credential is recorded under (M29.4, ADR-0058). */
+export const STACKD_INSTALL_CREDENTIAL_NAME = "scp-stackd (install-time)";
+
+/** Advisory-lock class for install-credential provisioning, distinct from provision.ts's. */
+const INSTALL_CREDENTIAL_LOCK_CLASSID = 0x5c_70_57_ad;
+
+/**
+ * INSTALL-TIME OPERATOR CREDENTIAL for the stack controller (M29.4, ADR-0058).
+ *
+ * The chart generates the whole `scp_op_<tokenId>.<secret>` once and mounts it into exactly two
+ * pods: the stack controller, which presents it, and the migrations Job, which calls this with its
+ * ADMIN connection to record the argon2 hash. The api/worker pods never hold the plaintext, and no
+ * route returns it: `listOperatorCredentials` never projects a secret or a hash.
+ *
+ * Idempotent on every upgrade. A token id already present with a matching secret is left alone; a
+ * present id whose secret does NOT verify is refused rather than overwritten, because that row is
+ * somebody else's; a present row an operator REVOKED stays revoked. When the chart's Secret is replaced (a deliberate rotation), the previous
+ * install-time row is revoked in the same transaction — only rows this function wrote (bootstrap-
+ * minted, carrying this name), never a credential a person minted.
+ */
+export async function provisionInstallOperatorCredential(
+  adminPool: pg.Pool,
+  input: { name: string; token: string }
+): Promise<"created" | "unchanged" | "revoked"> {
+  const parsed = parsePrefixedToken(OPERATOR_PREFIX, input.token.trim());
+  if (!parsed || parsed.tokenId.length < 16 || parsed.secret.length < 32) {
+    throw new Error(
+      `the install-time operator credential for '${input.name}' is not a well-formed ` +
+        `${OPERATOR_PREFIX}<tokenId>.<secret> (tokenId >= 16 chars, secret >= 32) — refusing to record it`
+    );
+  }
+  const client = await adminPool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
+      INSTALL_CREDENTIAL_LOCK_CLASSID,
+      input.name
+    ]);
+    const existing = await client.query<{ token_hash: string; revoked_at: Date | null }>(
+      "SELECT token_hash, revoked_at FROM instance_operator_credentials WHERE token_id = $1",
+      [parsed.tokenId]
+    );
+    let outcome: "created" | "unchanged" | "revoked" = "unchanged";
+    const row = existing.rows[0];
+    if (row) {
+      if (!(await argon2.verify(row.token_hash, parsed.secret))) {
+        throw new Error(
+          `an operator credential with this token id already exists and does not match ` +
+            `'${input.name}' — refusing to overwrite it; replace the install secret`
+        );
+      }
+      // A revocation is an operator's decision and survives every upgrade: never resurrected here.
+      if (row.revoked_at !== null) outcome = "revoked";
+    } else {
+      await client.query(
+        `INSERT INTO instance_operator_credentials (id, name, token_id, token_hash, created_by_user_id)
+         VALUES ($1, $2, $3, $4, NULL)`,
+        [uuidv7(), input.name, parsed.tokenId, await argon2.hash(parsed.secret)]
+      );
+      outcome = "created";
+    }
+    await client.query(
+      `UPDATE instance_operator_credentials SET revoked_at = now()
+        WHERE name = $1 AND created_by_user_id IS NULL AND revoked_at IS NULL AND token_id <> $2`,
+      [input.name, parsed.tokenId]
+    );
+    await client.query("COMMIT");
+    return outcome;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /** Verifies a presented `x-scp-operator-token`. See docs/auth.md §29. */

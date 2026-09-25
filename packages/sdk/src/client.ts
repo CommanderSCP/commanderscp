@@ -317,7 +317,15 @@ import {
   // The live event stream (`GET /events/stream`) — a generated SSE operation like any other
   // generated operation, `responseValidator` included, since the SSE API-parity work declared it
   // in the contract.
-  streamEvents as streamEventsRequest
+  streamEvents as streamEventsRequest,
+  // M29.4 — the Standard Stack (ADR-0058).
+  getStack as getStackRequest,
+  putStackBackend as putStackBackendRequest,
+  putStackSettings as putStackSettingsRequest,
+  requestStackUpgrade as requestStackUpgradeRequest,
+  getStackDiagnostics as getStackDiagnosticsRequest,
+  getStackSpec as getStackSpecRequest,
+  putStackStatus as putStackStatusRequest
 } from "./generated/sdk.gen.js";
 import type {
   ApplyPlanResponse,
@@ -528,7 +536,14 @@ import type {
   ArgoOpsPinRequest,
   ArgoOpsPinView,
   InfrastructureMembershipDiff,
-  ObservedMember
+  ObservedMember,
+  StackBackend,
+  StackView,
+  StackDiagnostics,
+  StackSpecDocument,
+  PutStackBackendRequest,
+  PutStackSettingsRequest,
+  PutStackStatusRequest
 } from "@scp/schemas";
 import { ScpApiError, ScpResponseValidationError } from "./errors.js";
 import { installResponseValidationErrors } from "./response-validation.js";
@@ -2193,6 +2208,72 @@ export class ScpClient {
         headers: { "x-scp-operator-token": operatorToken }
       });
       return unwrap(result);
+    }
+  };
+
+  /**
+   * M29.4 — the Standard Stack (ADR-0058). `get` is an ordinary session read. Every change needs
+   * the deployment operator credential as well, passed explicitly like the other instance-tier
+   * verbs. `spec` and `putStatus` are the stack controller's two doors: it holds an operator
+   * credential and no session, so they send only the operator header.
+   */
+  readonly stack = {
+    get: async (): Promise<StackView> => {
+      const result = await getStackRequest({ client: this.client });
+      return unwrap(result);
+    },
+    putBackend: async (
+      backend: StackBackend,
+      req: PutStackBackendRequest,
+      operatorToken: string
+    ): Promise<StackView> => {
+      const result = await putStackBackendRequest({
+        client: this.client,
+        path: { backend },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    putSettings: async (
+      req: PutStackSettingsRequest,
+      operatorToken: string
+    ): Promise<StackView> => {
+      const result = await putStackSettingsRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    requestUpgrade: async (operatorToken: string): Promise<StackView> => {
+      const result = await requestStackUpgradeRequest({
+        client: this.client,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    diagnostics: async (operatorToken: string): Promise<StackDiagnostics> => {
+      const result = await getStackDiagnosticsRequest({
+        client: this.client,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    spec: async (operatorToken: string): Promise<StackSpecDocument> => {
+      const result = await getStackSpecRequest({
+        client: this.client,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    putStatus: async (req: PutStackStatusRequest, operatorToken: string): Promise<void> => {
+      const result = await putStackStatusRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrapVoid(result);
     }
   };
 

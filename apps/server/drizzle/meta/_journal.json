@@ -883,6 +883,13 @@
       "when": 1790276122583,
       "tag": "0125_managed_iac_workspace_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
+      "when": 1790302897725,
+      "tag": "0126_stack_desired_state",
+      "breakpoints": true
     }
   ]
 }

@@ -18984,6 +18984,481 @@ export type PutScannerAssignmentResponses = {
 
 export type PutScannerAssignmentResponse = PutScannerAssignmentResponses[keyof PutScannerAssignmentResponses];
 
+export type GetStackData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/stack';
+};
+
+export type GetStackErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetStackError = GetStackErrors[keyof GetStackErrors];
+
+export type GetStackResponses = {
+    /**
+     * Success
+     */
+    200: {
+        settings: {
+            updatePolicy: 'automatic' | 'manual';
+            upgradeGeneration: number;
+        };
+        controller: {
+            release: string | null;
+            lastSeenAt: string | null;
+            reporting: boolean;
+            observedUpgradeGeneration: number | null;
+        };
+        backends: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            enabled: boolean;
+            sizeTier: 'small' | 'medium' | 'large';
+            status: {
+                phase: 'installing' | 'ready' | 'degraded' | 'upgrading' | 'failed' | 'removing' | 'disabled';
+                runningVersion: string | null;
+                targetVersion: string | null;
+                lastError: string | null;
+                needs: Array<{
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    message: string;
+                }>;
+                observedAt: string;
+            } | null;
+        }>;
+    };
+};
+
+export type GetStackResponse = GetStackResponses[keyof GetStackResponses];
+
+export type PutStackBackendData = {
+    body: {
+        enabled: boolean;
+        sizeTier?: 'small' | 'medium' | 'large';
+    };
+    path: {
+        backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+    };
+    query?: never;
+    url: '/instance/stack/backends/{backend}';
+};
+
+export type PutStackBackendErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutStackBackendError = PutStackBackendErrors[keyof PutStackBackendErrors];
+
+export type PutStackBackendResponses = {
+    /**
+     * Success
+     */
+    200: {
+        settings: {
+            updatePolicy: 'automatic' | 'manual';
+            upgradeGeneration: number;
+        };
+        controller: {
+            release: string | null;
+            lastSeenAt: string | null;
+            reporting: boolean;
+            observedUpgradeGeneration: number | null;
+        };
+        backends: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            enabled: boolean;
+            sizeTier: 'small' | 'medium' | 'large';
+            status: {
+                phase: 'installing' | 'ready' | 'degraded' | 'upgrading' | 'failed' | 'removing' | 'disabled';
+                runningVersion: string | null;
+                targetVersion: string | null;
+                lastError: string | null;
+                needs: Array<{
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    message: string;
+                }>;
+                observedAt: string;
+            } | null;
+        }>;
+    };
+};
+
+export type PutStackBackendResponse = PutStackBackendResponses[keyof PutStackBackendResponses];
+
+export type PutStackSettingsData = {
+    body: {
+        updatePolicy: 'automatic' | 'manual';
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/stack/settings';
+};
+
+export type PutStackSettingsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutStackSettingsError = PutStackSettingsErrors[keyof PutStackSettingsErrors];
+
+export type PutStackSettingsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        settings: {
+            updatePolicy: 'automatic' | 'manual';
+            upgradeGeneration: number;
+        };
+        controller: {
+            release: string | null;
+            lastSeenAt: string | null;
+            reporting: boolean;
+            observedUpgradeGeneration: number | null;
+        };
+        backends: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            enabled: boolean;
+            sizeTier: 'small' | 'medium' | 'large';
+            status: {
+                phase: 'installing' | 'ready' | 'degraded' | 'upgrading' | 'failed' | 'removing' | 'disabled';
+                runningVersion: string | null;
+                targetVersion: string | null;
+                lastError: string | null;
+                needs: Array<{
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    message: string;
+                }>;
+                observedAt: string;
+            } | null;
+        }>;
+    };
+};
+
+export type PutStackSettingsResponse = PutStackSettingsResponses[keyof PutStackSettingsResponses];
+
+export type RequestStackUpgradeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/stack/upgrade';
+};
+
+export type RequestStackUpgradeErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RequestStackUpgradeError = RequestStackUpgradeErrors[keyof RequestStackUpgradeErrors];
+
+export type RequestStackUpgradeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        settings: {
+            updatePolicy: 'automatic' | 'manual';
+            upgradeGeneration: number;
+        };
+        controller: {
+            release: string | null;
+            lastSeenAt: string | null;
+            reporting: boolean;
+            observedUpgradeGeneration: number | null;
+        };
+        backends: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            enabled: boolean;
+            sizeTier: 'small' | 'medium' | 'large';
+            status: {
+                phase: 'installing' | 'ready' | 'degraded' | 'upgrading' | 'failed' | 'removing' | 'disabled';
+                runningVersion: string | null;
+                targetVersion: string | null;
+                lastError: string | null;
+                needs: Array<{
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    message: string;
+                }>;
+                observedAt: string;
+            } | null;
+        }>;
+    };
+};
+
+export type RequestStackUpgradeResponse = RequestStackUpgradeResponses[keyof RequestStackUpgradeResponses];
+
+export type GetStackDiagnosticsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/stack/diagnostics';
+};
+
+export type GetStackDiagnosticsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetStackDiagnosticsError = GetStackDiagnosticsErrors[keyof GetStackDiagnosticsErrors];
+
+export type GetStackDiagnosticsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        generatedAt: string;
+        stack: {
+            settings: {
+                updatePolicy: 'automatic' | 'manual';
+                upgradeGeneration: number;
+            };
+            controller: {
+                release: string | null;
+                lastSeenAt: string | null;
+                reporting: boolean;
+                observedUpgradeGeneration: number | null;
+            };
+            backends: Array<{
+                backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+                enabled: boolean;
+                sizeTier: 'small' | 'medium' | 'large';
+                status: {
+                    phase: 'installing' | 'ready' | 'degraded' | 'upgrading' | 'failed' | 'removing' | 'disabled';
+                    runningVersion: string | null;
+                    targetVersion: string | null;
+                    lastError: string | null;
+                    needs: Array<{
+                        code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                        message: string;
+                    }>;
+                    observedAt: string;
+                } | null;
+            }>;
+        };
+        backends: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            detail: Array<string>;
+        }>;
+    };
+};
+
+export type GetStackDiagnosticsResponse = GetStackDiagnosticsResponses[keyof GetStackDiagnosticsResponses];
+
+export type GetStackSpecData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/stack/spec';
+};
+
+export type GetStackSpecErrors = {
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetStackSpecError = GetStackSpecErrors[keyof GetStackSpecErrors];
+
+export type GetStackSpecResponses = {
+    /**
+     * Success
+     */
+    200: {
+        settings: {
+            updatePolicy: 'automatic' | 'manual';
+            upgradeGeneration: number;
+        };
+        backends: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            enabled: boolean;
+            sizeTier: 'small' | 'medium' | 'large';
+        }>;
+    };
+};
+
+export type GetStackSpecResponse = GetStackSpecResponses[keyof GetStackSpecResponses];
+
+export type PutStackStatusData = {
+    body: {
+        release: string;
+        observedUpgradeGeneration: number;
+        backends: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            phase: 'installing' | 'ready' | 'degraded' | 'upgrading' | 'failed' | 'removing' | 'disabled';
+            runningVersion: string | null;
+            targetVersion: string | null;
+            lastError: string | null;
+            needs: Array<{
+                code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                message: string;
+            }>;
+            detail: Array<string>;
+        }>;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/stack/status';
+};
+
+export type PutStackStatusErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutStackStatusError = PutStackStatusErrors[keyof PutStackStatusErrors];
+
+export type PutStackStatusResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type PutStackStatusResponse = PutStackStatusResponses[keyof PutStackStatusResponses];
+
 export type GetScanDbStatusData = {
     body?: never;
     path?: never;

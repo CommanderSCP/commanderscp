@@ -2653,3 +2653,63 @@ export const executionSystemSourceAllowlists = pgTable(
     )
   ]
 );
+
+/**
+ * THE STANDARD STACK'S DESIRED STATE, one row per bundled backend (M29.4, ADR-0058, E2).
+ *
+ * Instance-tier, no `org_id` — the `scanner_assignments` exception to DESIGN §4.2: the stack serves
+ * every org on the deployment. Tenant-read, operator-write (the migration appends the grants): the
+ * spec columns are what the near-cluster-admin stack controller acts on, so no role a tenant
+ * request can reach may write them. The status columns are the controller's report back, written
+ * through the same operator connection.
+ *
+ * `backend` and `size_tier` are plain text with CHECKs mirroring `StackBackendSchema` /
+ * `StackSizeTierSchema`, so a row outside the enumerated vocabulary cannot exist to be read.
+ */
+export const stackBackends = pgTable(
+  "stack_backends",
+  {
+    backend: text("backend").primaryKey(),
+    enabled: boolean("enabled").notNull().default(false),
+    sizeTier: text("size_tier").notNull().default("small"),
+    specUpdatedAt: timestamp("spec_updated_at", { withTimezone: true }).notNull().defaultNow(),
+    phase: text("phase"),
+    runningVersion: text("running_version"),
+    targetVersion: text("target_version"),
+    lastError: text("last_error"),
+    needs: jsonb("needs")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** The controller's evidence for the diagnostics read — never on the tenant read model. */
+    detail: jsonb("detail")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    statusObservedAt: timestamp("status_observed_at", { withTimezone: true })
+  },
+  (t) => [
+    check(
+      "stack_backends_backend_ck",
+      sql`${t.backend} IN ('argocd', 'argo-workflows', 'argo-rollouts', 'argo-events', 'gitea')`
+    ),
+    check("stack_backends_size_tier_ck", sql`${t.sizeTier} IN ('small', 'medium', 'large')`)
+  ]
+);
+
+/** The stack's instance-wide settings and the controller's heartbeat — a singleton row. */
+export const stackSettings = pgTable(
+  "stack_settings",
+  {
+    id: text("id").primaryKey().default("instance"),
+    updatePolicy: text("update_policy").notNull().default("automatic"),
+    upgradeGeneration: integer("upgrade_generation").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    controllerRelease: text("controller_release"),
+    controllerObservedUpgradeGeneration: integer("controller_observed_upgrade_generation"),
+    controllerSeenAt: timestamp("controller_seen_at", { withTimezone: true })
+  },
+  (t) => [
+    check("stack_settings_singleton_ck", sql`${t.id} = 'instance'`),
+    check("stack_settings_update_policy_ck", sql`${t.updatePolicy} IN ('automatic', 'manual')`),
+    check("stack_settings_upgrade_generation_ck", sql`${t.upgradeGeneration} >= 0`)
+  ]
+);

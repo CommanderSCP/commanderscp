@@ -7221,6 +7221,329 @@ export const zPutScannerAssignmentResponse = z.object({
 /**
  * Success
  */
+export const zGetStackResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zPutStackBackendResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zPutStackSettingsResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zRequestStackUpgradeResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zGetStackDiagnosticsResponse = z.object({
+    generatedAt: z.string(),
+    stack: z.object({
+        settings: z.object({
+            updatePolicy: z.enum(['automatic', 'manual']),
+            upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+        }),
+        controller: z.object({
+            release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastSeenAt: z.string().nullable(),
+            reporting: z.boolean(),
+            observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+        }),
+        backends: z.array(z.object({
+            backend: z.enum([
+                'argocd',
+                'argo-workflows',
+                'argo-rollouts',
+                'argo-events',
+                'gitea'
+            ]),
+            enabled: z.boolean(),
+            sizeTier: z.enum([
+                'small',
+                'medium',
+                'large'
+            ]),
+            status: z.object({
+                phase: z.enum([
+                    'installing',
+                    'ready',
+                    'degraded',
+                    'upgrading',
+                    'failed',
+                    'removing',
+                    'disabled'
+                ]),
+                runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+                targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+                lastError: z.string().max(2000).nullable(),
+                needs: z.array(z.object({
+                    code: z.enum([
+                        'infra-state-backend',
+                        'infra-runner-image',
+                        'rpm-builder-image',
+                        'upgrade-approval',
+                        'upgrade-rolled-back'
+                    ]),
+                    message: z.string().min(1).max(500)
+                })).max(20),
+                observedAt: z.string()
+            }).nullable()
+        }))
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        detail: z.array(z.string())
+    }))
+});
+
+/**
+ * Success
+ */
+export const zGetStackSpecResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ])
+    }))
+});
+
+/**
+ * Success
+ */
+export const zPutStackStatusResponse = z.void();
+
+/**
+ * Success
+ */
 export const zGetScanDbStatusResponse = z.object({
     cacheConfigured: z.boolean(),
     present: z.boolean(),
