@@ -43,9 +43,12 @@ services:
         - NODE_IMAGE
     environment:
       SCP_ROLE: all
-      # The eval stack IS a commander — declared, because an undeclared role refuses promotion export,
-      # cosign key minting and dependency automation fail-closed (component-journey-view.md §8.9).
-      SCP_FEDERATION_ROLE: commander
+      # The eval stack IS a commander by default — declared, because an undeclared role refuses
+      # promotion export, cosign key minting and dependency automation fail-closed
+      # (component-journey-view.md §8.9). M29.1's `scp install --mode compose --role <role>` sets
+      # SCP_FEDERATION_ROLE in the shell environment before `docker compose up`; unset (the plain
+      # dev `docker compose up` path), the default below is unchanged.
+      SCP_FEDERATION_ROLE: ${SCP_FEDERATION_ROLE:-commander}
       PORT: "8080"
       HOST: "0.0.0.0"
       DATABASE_URL: postgres://scp:scp@postgres:5432/scp
@@ -54,7 +57,12 @@ services:
       # D6 (§7.3): this eval stack boots with zero required secrets (ephemeral master key + cookie),
       # so it declares evaluation mode explicitly — production mode refuses ephemeral secrets. Helm
       # defaults to production; a real deployment supplies appSecrets.existingSecret instead.
-      SCP_DEPLOYMENT_MODE: evaluation
+      SCP_DEPLOYMENT_MODE: ${SCP_DEPLOYMENT_MODE:-evaluation}
+      # M29.1 (the front door) — the installer's bootstrap org/admin/password overrides, same
+      # var-substitution pattern as the two above: unset, this is byte-identical to before.
+      SCP_BOOTSTRAP_ORG: ${SCP_BOOTSTRAP_ORG:-default}
+      SCP_BOOTSTRAP_ADMIN_USERNAME: ${SCP_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      SCP_BOOTSTRAP_ADMIN_PASSWORD: ${SCP_BOOTSTRAP_ADMIN_PASSWORD:-}
     ports:
       - "8080:8080"
     depends_on:

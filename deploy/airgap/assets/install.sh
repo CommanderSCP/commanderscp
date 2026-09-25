@@ -61,6 +61,9 @@ DRY_RUN=0
 REGISTRY=""
 INSECURE_REGISTRY=0
 PUBKEY="${SCP_COSIGN_PUBKEY:-}"
+KUBE_CONTEXT=""
+TIMEOUT=300
+SKIP_BUNDLED_BACKENDS=0
 
 usage() {
   cat <<'EOF'
@@ -80,6 +83,20 @@ Options:
   --mode helm|compose     Install mode (default: helm)
   --namespace <ns>        Kubernetes namespace (helm mode only; default: helm's current context default)
   --release-name <name>   Helm release name (helm mode only; default: scp)
+  --kube-context <ctx>    Kubernetes context to install into (helm mode only; default: helm's
+                            current context). Passed straight through as `helm --kube-context`.
+  --timeout <seconds>     helm --wait timeout for the SCP release itself (helm mode only;
+                            default: 300). This script did not wait for readiness at all before
+                            M29.1 (the front door) — the earlier plain
+                            `helm upgrade --install` here returned as soon as the API server
+                            accepted the release, not once pods were actually Ready.
+  --skip-bundled-backends  Do not run scp-bundled.sh for this bundle's Argo/Gitea backends (helm
+                            mode only). For an install driven by `scp install`, which turns on the
+                            stack controller (stackd.enabled, on by default since M29.1) and
+                            enables backends through the Standard Stack API instead — running BOTH
+                            would apply the same backend twice, under two different field managers.
+                            Calling this script directly (without `scp install`) should NOT pass
+                            this flag, or nothing installs the backends this bundle carries.
   --insecure-registry      Allow plain-HTTP/self-signed-TLS registries (skopeo --dest-tls-verify=false).
                             Only for a registry you control on a trusted network (e.g. an internal
                             air-gapped registry with a self-signed cert, or a local test registry) —
@@ -100,6 +117,9 @@ while [[ $# -gt 0 ]]; do
     --namespace) NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
     --release-name) RELEASE_NAME="${2:?--release-name requires a value}"; shift 2 ;;
     --mode) MODE="${2:?--mode requires a value}"; shift 2 ;;
+    --kube-context) KUBE_CONTEXT="${2:?--kube-context requires a value}"; shift 2 ;;
+    --timeout) TIMEOUT="${2:?--timeout requires a value}"; shift 2 ;;
+    --skip-bundled-backends) SKIP_BUNDLED_BACKENDS=1; shift ;;
     --insecure-registry) INSECURE_REGISTRY=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -373,7 +393,11 @@ if [[ "$MODE" == "helm" ]]; then
   HELM_ARGS=(upgrade --install "$RELEASE_NAME" "${SCRIPT_DIR}/helm"
     --set "image.repository=${SCPD_REPOSITORY}"
     --set "image.tag=${SCPD_TAG}"
-    --set "managedIac.runnerImage=${RUNNER_IAC_REF}")
+    --set "managedIac.runnerImage=${RUNNER_IAC_REF}"
+    --wait --timeout "${TIMEOUT}s")
+  if [[ -n "$KUBE_CONTEXT" ]]; then
+    HELM_ARGS+=(--kube-context "$KUBE_CONTEXT")
+  fi
   # Bundled executor backends (Mode B) are delivered SEPARATELY from the SCP release — via the
   # deploy/helm-bundled chart + scp-bundled.sh, applied AFTER the SCP install below — NOT the main
   # chart: their vendored manifests exceed Helm's 1 MB release-Secret limit (packaging them into the
@@ -535,7 +559,11 @@ if [[ "$MODE" == "helm" ]]; then
     # flips the SCP release's auto-wire hook + NetworkPolicy. This deploys the Standard Stack the only
     # way that fits under Kubernetes' Secret limit.
     NS_ARGS=(); [[ -n "$NAMESPACE" ]] && NS_ARGS=(--scp-namespace "$NAMESPACE")
+    if [[ $SKIP_BUNDLED_BACKENDS -eq 1 ]]; then
+      echo "   --skip-bundled-backends: not running scp-bundled.sh (${#BUNDLED_APPLY[@]} backend(s) this bundle carries are left for the stack controller / 'scp stack enable' to install instead)"
+    fi
     for be in ${BUNDLED_APPLY[@]+"${BUNDLED_APPLY[@]}"}; do
+      [[ $SKIP_BUNDLED_BACKENDS -eq 1 ]] && break
       echo "   == enabling bundled backend: ${be} =="
       BSET=()
       case "$be" in
