@@ -1101,10 +1101,17 @@ function verifySocketInvariantMatrix(): void {
   let grantsChecked = 0;
   let grantProblems = 0;
 
+  // M29.1 (ADR-0058 "the default flip"): stackd now renders BY DEFAULT, and it renders its own
+  // ClusterRole/ClusterRoleBinding/second ServiceAccount+namespace-spanning RoleBindings — real,
+  // reviewed and asserted on their OWN terms in verifyStackdMatrix() below. This matrix is about
+  // the MANAGED RUNNER's identity in isolation (one pod identity, no cluster-scoped grant, no
+  // socket mount); every point here turns stackd back off so it keeps testing exactly that,
+  // the same way it did before stackd existed as a default-on render.
+  const STACKD_OFF = ["--set", "stackd.enabled=false"];
   for (const point of points) {
     let raw: string;
     try {
-      raw = renderRaw(CHART_DIR, "verify-socket", point.args);
+      raw = renderRaw(CHART_DIR, "verify-socket", [...point.args, ...STACKD_OFF]);
     } catch (err) {
       // A REFUSAL IS AN ANSWER, AND THE ONLY ACCEPTABLE ONE FOR A COMBINATION THE CHART GUARDS.
       // Counting it silently would let a guard that started refusing EVERYTHING shrink the matrix
@@ -2850,6 +2857,15 @@ async function main(): Promise<void> {
       "oidc.clientId=scp",
       "--set",
       "oidc.redirectUri=https://scp.example.com/callback",
+      // M29.1 (ADR-0058 "the default flip", ADR-0059): stackd.enabled is now the chart's OWN
+      // default, and it REFUSES to render together with federation.serverMtls.enabled (above) —
+      // a real, deliberate guard (stackd dials scpd in-cluster over plain HTTP; serverMtls turns
+      // scpd's whole listener into HTTPS). That combination is not what THIS render is testing —
+      // every stackd-specific combination is exercised in its own dedicated renders in stackd.ts
+      // — so it is turned off here, the same way any other render that wants a DIFFERENT combo
+      // than the default carries its own --set.
+      "--set",
+      "stackd.enabled=false",
       // Main-chart bundled integration: only the SLIM enabled flags exist here now (they turn on the
       // auto-wire hook + allow-argocd NetworkPolicy). The vendored render lives in the
       // separate bundled chart, verified below.

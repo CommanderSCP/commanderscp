@@ -406,11 +406,14 @@ operatorApi:
 # namespaced rights exist only inside the five backend namespaces below (created by this chart,
 # each with its own RoleBinding), and nothing a tenant writes reaches it (ADR-0058).
 #
-# OFF BY DEFAULT IN M29.4; M29.1's installer (`scp install`) turns it on for every new install, and
-# the chart default flips once that ships (ADR-0058 "the default flip").
+# ON BY DEFAULT SINCE M29.1 (ADR-0058 "the default flip"; ADR-0059 "the front door"): the charter's
+# Managed Standard Stack is on by default for a new install (proposal D3), and `scp install` is no
+# longer what turns this on — a BARE `helm install` gets it too, matching every other bundled-by-
+# default choice this chart makes. Set `stackd.enabled=false` explicitly for a role (or an
+# install) that wants none of it — `scp install --role retrans` does exactly this.
 # -------------------------------------------------------------------------------------------
 stackd:
-  enabled: false
+  enabled: true
   image:
     repository: ghcr.io/commanderscp/scp-stackd
     # Empty = the scpd image's tag: the stack's versions ARE the SCP release's (E4).

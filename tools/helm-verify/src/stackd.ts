@@ -143,7 +143,19 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
   const clusterRole = `${full}-stackd-cluster`;
   const namespacedRole = `${full}-stackd-namespaced`;
 
-  const off = ctx.renderChart(release, ["--namespace", ns, "--set", "networkPolicy.enabled=true"]);
+  // M29.1 (ADR-0058 "the default flip"): stackd.enabled is now the chart's OWN default (true), so
+  // the "off" baseline this diff needs must say so explicitly — the bare render below it replaced
+  // is no longer off at all, and the diff would silently become "added: []" instead of failing
+  // loudly, which is exactly the shape CLAUDE.md's grep-blind-spot warning is about: a test that
+  // stops testing anything and stays green.
+  const off = ctx.renderChart(release, [
+    "--namespace",
+    ns,
+    "--set",
+    "networkPolicy.enabled=true",
+    "--set",
+    "stackd.enabled=false"
+  ]);
   const on = ctx.renderChart(release, [
     "--namespace",
     ns,
