@@ -44,11 +44,14 @@ import {
   BUNDLE_IMAGES_TS_PATH,
   createSkopeoDigestResolver,
   fetchGiteaChartOverHelm,
+  GITEA_BUNDLE_IMAGE_NAME,
   GITEA_IMAGE_COORDINATE,
   IMAGES_LIST_PATH,
   isBackendName,
   isValidCommitSha,
   isValidUpstreamTag,
+  patchImageRefsOrThrow,
+  patchImagesList,
   VALUES_YAML_PATH,
   type BackendName,
   type DiffClassification,
@@ -591,6 +594,25 @@ export function parseSandboxOutputStrict(raw: string): {
       content: assertString(f["content"], `output.json.plan.files[${i}].content`)
     };
   });
+  // D2 (2026-09-25 third re-review): a duplicate PATH in `files` — the verification code that
+  // follows checked only the FIRST occurrence (`Array.prototype.find`), while the actual git tree
+  // this run builds carries a blob for EVERY entry at a duplicated path, and which one a real tree
+  // resolves to is not something a `find()` call gets to decide. Refused outright, at the shape-
+  // validation layer, before any content is looked at.
+  {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    for (const f of files) {
+      if (seen.has(f.path)) duplicates.add(f.path);
+      seen.add(f.path);
+    }
+    if (duplicates.size > 0) {
+      throw new Error(
+        `vendor-refresh orchestrator: REFUSED (untrusted_output_shape) — output.json.plan.files ` +
+          `names the same path more than once: ${[...duplicates].join(", ")}`
+      );
+    }
+  }
 
   const trackedImagesRaw = planRaw["trackedImages"];
   if (!Array.isArray(trackedImagesRaw)) {
@@ -685,36 +707,6 @@ export function verifyVendoredManifestUnchanged(
   return undefined;
 }
 
-/** finding 2, second orchestrator-side check: every line that DIFFERS between the old and new
- *  content of a shared downstream file must mention a tracked image coordinate on BOTH sides — a
- *  pure line-level diff, no YAML/TS parsing. A CHANGED LINE COUNT is refused outright: an added or
- *  removed line is something this check cannot vouch for the safety of at all. */
-export function verifyOnlyTrackedImageLinesChanged(
-  label: string,
-  oldContent: string,
-  newContent: string,
-  trackedCoordinates: readonly string[]
-): string | undefined {
-  if (oldContent === newContent) return undefined;
-  const oldLines = oldContent.split("\n");
-  const newLines = newContent.split("\n");
-  if (oldLines.length !== newLines.length) {
-    return `${label}: line count changed (${oldLines.length} -> ${newLines.length}) — cannot verify a line-level diff is confined to a tracked image`;
-  }
-  for (let i = 0; i < oldLines.length; i++) {
-    const oldLine = oldLines[i]!;
-    const newLine = newLines[i]!;
-    if (oldLine === newLine) continue;
-    const mentionsTracked = trackedCoordinates.some(
-      (c) => oldLine.includes(c) && newLine.includes(c)
-    );
-    if (!mentionsTracked) {
-      return `${label}: line ${i + 1} changed and does not mention a tracked image coordinate on both sides`;
-    }
-  }
-  return undefined;
-}
-
 /**
  * finding 3: "Auto-merge eligibility = `image-only` AND authenticity VERIFIED." Authenticity means
  * BOTH a confirmed, passing signature check (never merely attempted — {@link BACKEND_VERIFICATION}'s
@@ -738,6 +730,109 @@ export function authenticityGapsFor(backend: BackendName): readonly string[] {
     );
   }
   return gaps;
+}
+
+// ================================================================================================
+// AUTO-MERGE IS FULLY ORCHESTRATOR-COMPUTED, EXACTLY (2026-09-25 third re-review).
+// ================================================================================================
+// A second re-review found two more crafted outputs that still auto-merged: a values.yaml line
+// changed to a COMPLETELY DIFFERENT image with the tracked coordinate merely appended as a trailing
+// comment (`verifyOnlyTrackedImageLinesChanged`'s "the coordinate appears somewhere on the line"
+// check asked the wrong question — presence, not IDENTITY), and a duplicate path in `plan.files`
+// (fixed above, at the shape-validation layer). The instruction this round is explicit: stop
+// patching heuristics. What follows REPLACES the line-heuristic entirely:
+//
+//   1. SCP's OWN trusted files (`values.yaml`, `bundle-images.ts`, `images.list`) are never taken
+//      from the sandbox's output AT ALL — the orchestrator reads them itself (already did, for the
+//      downgrade guard and the classifier's baseline) and computes the EXACT substituted content
+//      itself, with the SAME hardened, left-anchored, tested regex substitution
+//      (`patchImageRefsOrThrow`/`patchImagesList`, `tools/vendor-refresh`) the sandbox used to run
+//      unsupervised. There is no parsing of untrusted bytes here at all — TS/YAML syntax is never
+//      inspected — because these are never untrusted bytes: they are SCP's OWN file content, with
+//      one exact string substituted for another. If the sandbox's own returned copy of one of these
+//      files differs from what the orchestrator computed, THAT is a `requires-review` signal (a
+//      disagreement worth a human's attention), never an input to what gets committed.
+//   2. The VENDORED upstream file(s) are held to the SAME standard, over what the orchestrator
+//      already fetched: reconstruct what the OLD vendored text would look like after every tracked
+//      `coordinate:anyTag` is replaced with its new resolved ref (again, `patchImageRefsOrThrow` —
+//      the SAME function, same regex, same anchoring), and require the FETCHED bytes to equal that
+//      EXACTLY. Any other difference at all — a changed RBAC rule, a new CRD, a reformatted
+//      comment, anything — is `requires-review`. This is a STRICTER test than the semantic
+//      classifier ever was (a byte-exact compare admits nothing a semantic compare would have
+//      missed), which is why the classifier's own verdict no longer needs to GATE anything: it
+//      still runs, and its reasons still ride along in the PR body as a reviewer aid on a
+//      `requires-review` PR, but `image-only` from the classifier alone is never, by itself, enough.
+
+/** A byte-order mark (U+FEFF) or `\r` (part of CRLF) appearing ANYWHERE. Two encodings this repo's own files
+ *  never legitimately carry — either one changing between old and new content is refused (D4):
+ *  a BOM can change how a downstream tool interprets a file's encoding, and a mix of CRLF/LF can
+ *  hide a line from a naive line-based diff without hiding it from the file itself. */
+export function hasBomOrCrlf(text: string): boolean {
+  return text.includes("﻿") || text.includes("\r");
+}
+
+/** finding 2/3 (2026-09-25 third re-review), the REPLACEMENT for the line-heuristic: the ORCHESTRATOR
+ *  computes what "only the tracked image(s) changed" would look like, from bytes it already holds,
+ *  and requires the ACTUAL new bytes to match it EXACTLY — no parsing, no "does the line mention the
+ *  coordinate," just `patchImageRefsOrThrow`'s own hardened substitution (identical to what the
+ *  sandbox itself runs, reused rather than re-implemented) compared for byte equality. */
+export function isExactTagSubstitution(
+  oldContent: string,
+  newContent: string,
+  trackedImages: readonly TrackedImage[],
+  label: string
+): string | undefined {
+  // D4, checked FIRST so it gets its own specific diagnostic rather than being swallowed by the
+  // generic "changed by more than the tag" message below (an added `\r` or BOM byte already makes
+  // the exact-substitution comparison fail on its own, but naming the SPECIFIC reason is worth
+  // more to whoever reads it than a generic "something else changed too" would be).
+  if (hasBomOrCrlf(oldContent) !== hasBomOrCrlf(newContent)) {
+    return `${label}: a byte-order mark or CRLF line ending appeared or disappeared`;
+  }
+  if (trackedImages.length === 0) {
+    return newContent === oldContent
+      ? undefined
+      : `${label}: changed with no tracked image to attribute it to`;
+  }
+  let expected: string;
+  try {
+    expected = patchImageRefsOrThrow(oldContent, trackedImages, label);
+  } catch (err) {
+    return `${label}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (expected !== newContent) {
+    return `${label}: changed by more than the tracked image tag(s) — not a pure substitution of the old content`;
+  }
+  return undefined;
+}
+
+/** The `TrackedImage[]` the orchestrator ALREADY has enough to build itself, from data it resolved
+ *  and verified independently — the static per-backend coordinate/bundle-name table
+ *  (`ARGOPROJ_BACKENDS`/`GITEA_BUNDLE_IMAGE_NAME`) plus `imageTagForDigest`/`resolvedDigests`, which
+ *  `orchestrateRevendor` computed before ever launching the sandbox. Never taken from the sandbox's
+ *  own `plan.trackedImages` — that field is reported for provenance only from here on. */
+export function buildOrchestratorTrackedImages(
+  backend: BackendName,
+  imageTagForDigest: string,
+  resolvedDigests: Readonly<Record<string, string>>
+): TrackedImage[] {
+  const specs: Array<{ coordinate: string; bundleImageName: string }> =
+    backend === "gitea"
+      ? [{ coordinate: GITEA_IMAGE_COORDINATE, bundleImageName: GITEA_BUNDLE_IMAGE_NAME }]
+      : ARGOPROJ_BACKENDS[backend].trackedImages.map((t) => ({
+          coordinate: t.coordinate,
+          bundleImageName: t.bundleImageName
+        }));
+  return specs.map((spec) => {
+    const tagRef = `${spec.coordinate}:${imageTagForDigest}`;
+    const digest = resolvedDigests[tagRef];
+    if (digest === undefined) {
+      throw new Error(
+        `vendor-refresh orchestrator: no resolved digest for '${tagRef}' — cannot build the trusted tracked-image list`
+      );
+    }
+    return { bundleImageName: spec.bundleImageName, tagRef, resolvedRef: `${tagRef}@${digest}` };
+  });
 }
 
 async function runVendorSandbox(
@@ -775,6 +870,11 @@ export interface OrchestrateRevendorResult {
   plan: VendorRefreshPlan;
   classification: DiffClassification;
   fetchNote: string;
+  /** STALE vendor files to delete (2026-09-25 third re-review) — computed from the orchestrator's
+   *  OWN directory listing of the backend's vendor path, intersected against what the new plan does
+   *  NOT write; never from anything the sandbox reports. Empty for every backend but argo-workflows
+   *  today (the only one whose file COUNT can shrink between re-vendors). */
+  deletePaths: readonly string[];
 }
 
 /** The whole orchestrator half, end to end. `index.ts`'s `triggerRevendor` calls this in place of
@@ -898,13 +998,40 @@ export async function orchestrateRevendor(
     }
 
     const outputRaw = await readFile(join(outDir, "output.json"), "utf8");
-    // finding 2: STRICT shape validation — unknown keys refused before anything about the content
-    // is trusted at all.
+    // finding 2: STRICT shape validation — unknown keys or a duplicate path (D2) refused before
+    // anything about the content is trusted at all.
     const output = parseSandboxOutputStrict(outputRaw);
 
-    // THE ORCHESTRATOR'S OWN VERDICT (findings 2 and 3) — never merely the sandbox's, and never
-    // capable of moving the classification AWAY from requires-review, only toward it: every gap
-    // found here is APPENDED to whatever the sandbox itself reported.
+    // THE ORCHESTRATOR-COMPUTED TRACKED-IMAGE LIST — never the sandbox's own `plan.trackedImages`.
+    // Built from data this process already resolved and cosign-verified itself.
+    const orchestratorTrackedImages = buildOrchestratorTrackedImages(
+      backend,
+      imageTagForDigest,
+      resolvedDigests
+    );
+
+    // THE ORCHESTRATOR COMPUTES SCP'S OWN FILES ITSELF (2026-09-25 third re-review, point 1) — the
+    // sandbox's returned copies of these three are NEVER what gets committed; see this module's
+    // "AUTO-MERGE IS FULLY ORCHESTRATOR-COMPUTED" doc, above `runVendorSandbox`.
+    const patchedValuesYaml = patchImageRefsOrThrow(
+      valuesYaml!.content,
+      orchestratorTrackedImages,
+      VALUES_YAML_PATH
+    );
+    const patchedBundleImagesTs = patchImageRefsOrThrow(
+      bundleImagesTs!.content,
+      orchestratorTrackedImages,
+      BUNDLE_IMAGES_TS_PATH
+    );
+    const { content: patchedImagesList, updated: imagesListUpdated } = patchImagesList(
+      imagesList!.content,
+      orchestratorTrackedImages
+    );
+
+    // THE ORCHESTRATOR'S OWN VERDICT (findings 2 and 3, point 2) — never merely the sandbox's, and
+    // never capable of moving the classification AWAY from requires-review, only toward it: every
+    // gap found here is APPENDED to whatever the sandbox's (demoted, reviewer-aid-only) classifier
+    // itself reported.
     const orchestratorGaps: string[] = [...authenticityGapsFor(backend)];
     if (backend === "gitea") {
       // No byte-identical baseline exists for a rendered chart — "cannot be done" is itself a gap
@@ -919,16 +1046,43 @@ export async function orchestrateRevendor(
         output.plan.files
       );
       if (manifestGap) orchestratorGaps.push(manifestGap);
+      // POINT 2, THE REPLACEMENT FOR THE SEMANTIC CLASSIFIER AS AN AUTO-MERGE GATE: the fetched
+      // bytes must equal the OLD vendored text with every tracked coordinate's tag substituted —
+      // byte for byte, no YAML parse. The old vendored text is `currentVendoredFiles`, rejoined in
+      // the SAME path order `verifyVendoredManifestUnchanged` already uses.
+      const oldVendoredConcatenated = Object.keys(currentVendoredFiles)
+        .sort()
+        .map((p) => currentVendoredFiles[p])
+        .join("\n---\n");
+      const substitutionGap = isExactTagSubstitution(
+        oldVendoredConcatenated,
+        manifestText!,
+        orchestratorTrackedImages,
+        "vendored manifest"
+      );
+      if (substitutionGap) orchestratorGaps.push(substitutionGap);
     }
-    for (const [path, oldContent] of [
-      [VALUES_YAML_PATH, valuesYaml!.content],
-      [BUNDLE_IMAGES_TS_PATH, bundleImagesTs!.content],
-      [IMAGES_LIST_PATH, imagesList!.content]
+
+    // POINT 1'S LAST SENTENCE: the sandbox's OWN copies of the three shared files are never an
+    // input to what gets committed — but if they DISAGREE with what the orchestrator computed, that
+    // disagreement is itself worth a human's attention, never silently discarded.
+    for (const [path, oldContent, trusted] of [
+      [VALUES_YAML_PATH, valuesYaml!.content, patchedValuesYaml],
+      [BUNDLE_IMAGES_TS_PATH, bundleImagesTs!.content, patchedBundleImagesTs],
+      [IMAGES_LIST_PATH, imagesList!.content, patchedImagesList]
     ] as const) {
-      const returned = output.plan.files.find((f) => f.path === path);
-      const newContent = returned ? returned.content : oldContent;
-      const gap = verifyOnlyTrackedImageLinesChanged(path, oldContent, newContent, coordinates);
-      if (gap) orchestratorGaps.push(gap);
+      const sandboxReturned = output.plan.files.find((f) => f.path === path);
+      const sandboxContent = sandboxReturned ? sandboxReturned.content : oldContent;
+      if (sandboxContent !== trusted) {
+        orchestratorGaps.push(
+          `${path}: the sandbox's own returned content disagrees with what the orchestrator computed independently — the orchestrator's version is what is committed, but the disagreement itself is suspicious`
+        );
+      }
+      if (hasBomOrCrlf(oldContent) !== hasBomOrCrlf(trusted)) {
+        orchestratorGaps.push(
+          `${path}: a byte-order mark or CRLF line ending appeared or disappeared`
+        );
+      }
     }
 
     const combinedReasons = [...output.classification.reasons, ...orchestratorGaps];
@@ -937,7 +1091,58 @@ export async function orchestrateRevendor(
         ? { class: "image-only", reasons: [] }
         : { class: "requires-review", reasons: combinedReasons };
 
-    return { plan: output.plan, classification: combinedClassification, fetchNote };
+    // THE FINAL, COMMITTED FILE LIST: the sandbox's vendor-directory files verbatim (already
+    // verified byte-for-byte against the fetched bytes, above), PLUS the orchestrator's OWN computed
+    // copies of the three shared files — never the sandbox's copies of those three, which are
+    // discarded here regardless of whether they agreed (see the diagnostic above, which already
+    // recorded it if they did not).
+    const vendorDirFiles = output.plan.files.filter(
+      (f) =>
+        f.path !== VALUES_YAML_PATH &&
+        f.path !== BUNDLE_IMAGES_TS_PATH &&
+        f.path !== IMAGES_LIST_PATH
+    );
+    const finalFiles: VendorFile[] = [
+      ...vendorDirFiles,
+      { path: VALUES_YAML_PATH, content: patchedValuesYaml },
+      { path: BUNDLE_IMAGES_TS_PATH, content: patchedBundleImagesTs },
+      ...(imagesListUpdated.length > 0
+        ? [{ path: IMAGES_LIST_PATH, content: patchedImagesList }]
+        : [])
+    ];
+
+    // STALE VENDOR FILES TO DELETE (2026-09-25 third re-review): the orchestrator lists the vendor
+    // directory ITSELF — never trusting the sandbox to say what used to be there — and anything the
+    // new plan does NOT write is stale. Only argo-workflows' file count can shrink between
+    // re-vendors (finding 7's own `.Files.Glob`); every other backend's vendor file set is fixed by
+    // `isAllowedVendorFilename`'s own grammar, so this is a no-op for them.
+    const deletePaths: string[] = [];
+    if (backend === "argo-workflows") {
+      const prefix = vendorPathPrefix(backend);
+      const currentListing = await session.listDirectory(prefix.slice(0, -1), baseBranch);
+      const newVendorPaths = new Set(finalFiles.map((f) => f.path));
+      for (const path of currentListing ?? []) {
+        if (
+          isAllowedVendorFilename(backend, path.slice(prefix.length)) &&
+          !newVendorPaths.has(path)
+        ) {
+          deletePaths.push(path);
+        }
+      }
+    }
+
+    return {
+      plan: {
+        backend,
+        tag: toTag,
+        files: finalFiles,
+        trackedImages: orchestratorTrackedImages,
+        summary: output.plan.summary
+      },
+      classification: combinedClassification,
+      fetchNote,
+      deletePaths
+    };
   } finally {
     await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
   }

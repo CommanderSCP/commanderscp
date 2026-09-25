@@ -362,6 +362,148 @@ describe("trigger() dispatches 're-vendor' through the real managed-dep path (E2
     expect(decoded.some((c) => c === OLD_VALUES_YAML)).toBe(false);
   });
 
+  /**
+   * PROBE D1 (2026-09-25 third re-review) — MADE PERMANENT, end to end. A fake launcher stands in
+   * for a COMPROMISED (or merely buggy) sandbox container: instead of running the real `runSandbox`,
+   * it writes a CRAFTED `output.json` directly, with `values.yaml` rewritten to a completely
+   * different, malicious image — the tracked coordinate present ONLY as a trailing comment, exactly
+   * the shape the old line-heuristic accepted. Proves the STRUCTURAL fix (2026-09-25 third
+   * re-review, point 1): the committed content is the ORCHESTRATOR's own computed substitution,
+   * never whatever the sandbox claims — this run's blobs must carry the TRUSTED content, never the
+   * attacker's, and the disagreement itself must force requires-review (pull_request, never merged).
+   */
+  it("PROBE D1 (permanent, E2E): a malicious sandbox's values.yaml rewrite is IGNORED — the orchestrator's own computed content is what gets committed", async () => {
+    const maliciousLauncher: ResolveRunnerLauncher = () => ({
+      async run(spec: RunnerSpec) {
+        const craftedOutput = {
+          plan: {
+            backend: "argocd",
+            tag: "v3.5.0",
+            files: [
+              { path: "deploy/helm-bundled/vendor/argocd/install.yaml", content: FIXTURE_MANIFEST },
+              {
+                path: "deploy/helm-bundled/values.yaml",
+                // The exact D1 shape: an entirely different image, the tracked coordinate present
+                // only as a trailing comment.
+                content: "image: evil.example/pwn:v1 # quay.io/argoproj/argocd\n"
+              },
+              {
+                path: "deploy/airgap/src/bundle-images.ts",
+                content: OLD_BUNDLE_IMAGES_TS.replace("v3.4.5", "v3.5.0")
+              }
+            ],
+            trackedImages: [
+              {
+                bundleImageName: "argocd",
+                tagRef: "quay.io/argoproj/argocd:v3.5.0",
+                resolvedRef: `quay.io/argoproj/argocd:v3.5.0@${FIXTURE_DIGEST}`
+              }
+            ],
+            summary: "malicious plan"
+          },
+          classification: { class: "image-only", reasons: [] }
+        };
+        if (spec.copyOut) {
+          await mkdir(spec.copyOut.hostDir, { recursive: true });
+          await writeFile(
+            join(spec.copyOut.hostDir, "output.json"),
+            JSON.stringify(craftedOutput),
+            "utf8"
+          );
+        }
+        return { succeeded: true, stdout: "", stderr: "" };
+      },
+      async reap() {
+        return [];
+      }
+    });
+
+    const { ctx, calls } = revendorCtx();
+    const plugin = createManagedDepExecutorPlugin(maliciousLauncher, fakeRevendorFetchDeps());
+    const ref = await plugin.trigger(ctx, {
+      kind: "custom",
+      idempotencyKey: `${CHANGE_ID}:re-vendor:probe-d1`,
+      // auto_merge requested WITH a valid expectedHeadCommit — proves the mismatch downgrades
+      // delivery too, not merely the committed bytes.
+      parameters: {
+        ...revendorParams,
+        delivery: "auto_merge" as const,
+        expectedHeadCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+      }
+    });
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("succeeded");
+    expect(status.detail).toMatch(/opened as/);
+    expect(status.detail).not.toMatch(/merged as/); // the mismatch forced requires-review
+
+    const blobs = calls.filter((c) => c.method === "POST" && c.url.endsWith("/git/blobs"));
+    const decoded = blobs.map((b) =>
+      Buffer.from((b.body as { content: string }).content, "base64").toString("utf8")
+    );
+    // The MALICIOUS content never reached a blob at all.
+    expect(decoded.some((c) => c.includes("evil.example"))).toBe(false);
+    // What DID get committed for values.yaml is the orchestrator's own trusted substitution.
+    expect(decoded).toContain("image: quay.io/argoproj/argocd:v3.5.0 # Argo CD (Apache-2.0)\n");
+  });
+
+  /** PROBE D2 (2026-09-25 third re-review) — MADE PERMANENT, end to end. A crafted `output.json`
+   *  names the SAME path twice in `plan.files`, with different content — the shape that let a git
+   *  tree carry two blobs at one path while the verification code checked only the first. Refused
+   *  outright, at shape-validation time, before any blob is created. */
+  it("PROBE D2 (permanent, E2E): a duplicate path in plan.files REFUSES the whole run before any write", async () => {
+    const duplicatePathLauncher: ResolveRunnerLauncher = () => ({
+      async run(spec: RunnerSpec) {
+        const craftedOutput = {
+          plan: {
+            backend: "argocd",
+            tag: "v3.5.0",
+            files: [
+              { path: "deploy/helm-bundled/vendor/argocd/install.yaml", content: FIXTURE_MANIFEST },
+              {
+                path: "deploy/helm-bundled/vendor/argocd/install.yaml",
+                content: "malicious-second-copy"
+              }
+            ],
+            trackedImages: [
+              {
+                bundleImageName: "argocd",
+                tagRef: "quay.io/argoproj/argocd:v3.5.0",
+                resolvedRef: `quay.io/argoproj/argocd:v3.5.0@${FIXTURE_DIGEST}`
+              }
+            ],
+            summary: "duplicate-path plan"
+          },
+          classification: { class: "image-only", reasons: [] }
+        };
+        if (spec.copyOut) {
+          await mkdir(spec.copyOut.hostDir, { recursive: true });
+          await writeFile(
+            join(spec.copyOut.hostDir, "output.json"),
+            JSON.stringify(craftedOutput),
+            "utf8"
+          );
+        }
+        return { succeeded: true, stdout: "", stderr: "" };
+      },
+      async reap() {
+        return [];
+      }
+    });
+
+    const { ctx, calls } = revendorCtx();
+    const plugin = createManagedDepExecutorPlugin(duplicatePathLauncher, fakeRevendorFetchDeps());
+    const ref = await plugin.trigger(ctx, {
+      kind: "custom",
+      idempotencyKey: `${CHANGE_ID}:re-vendor:probe-d2`,
+      parameters: revendorParams
+    });
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/untrusted_output_shape/);
+    expect(status.detail).toMatch(/names the same path more than once/);
+    expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/git/blobs"))).toBe(false);
+  });
+
   it("REFUSES (before any write) when the plan proposes a path outside declaredManifestPaths", async () => {
     const { ctx, calls } = revendorCtx();
     const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());

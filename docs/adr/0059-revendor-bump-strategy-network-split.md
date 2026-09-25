@@ -160,6 +160,34 @@ in this same family of images; `apps/runner-dep-vendor` follows that precedent, 
    given above (a toolchain the tag-edit strategy never needs, and a containment story that becomes
    conditional on which strategy launched the container rather than a property of the image).
 
+## Third re-review (2026-09-25, same day) — auto-merge is fully orchestrator-computed, exactly
+
+Two crafted outputs still auto-merged after the second re-review: a `values.yaml`/`bundle-images.ts`
+line rewritten to an ENTIRELY DIFFERENT image with the tracked coordinate appended as a trailing
+comment (the line-heuristic asked only "does the coordinate appear on the line," not "is the line
+an exact substitution"), and a duplicate path in `plan.files` (the verification code checked only the
+first occurrence via `Array.prototype.find`, while the git tree carries a blob for every entry).
+Instruction: stop patching heuristics. Fixed structurally:
+
+- SCP's own files (`values.yaml`, `bundle-images.ts`, `images.list`) are computed by the
+  ORCHESTRATOR itself, from bytes it read from the repo, using the SAME hardened, tested,
+  left-anchored `patchImageRefsOrThrow`/`patchImagesList` the sandbox used to run unsupervised. The
+  sandbox's own copies of these three files are NEVER committed — a disagreement between them is
+  itself folded into the classification as a `requires-review` reason.
+- The vendored upstream file is held to the SAME exact-substitution standard against the fetched,
+  authenticity-checked bytes: `isExactTagSubstitution` requires the fetch to equal the OLD vendored
+  text with every tracked coordinate's tag replaced, byte for byte — stricter than the semantic
+  classifier ever was, which is why the classifier's own verdict no longer needs to gate anything
+  (it still runs and its reasons still ride along as a reviewer aid).
+- `parseSandboxOutputStrict` now refuses a duplicate path in `plan.files` outright.
+- `isExactTagSubstitution` refuses a BOM or CRLF appearing/disappearing between old and new content.
+- Argo Workflows' stale split parts (a re-vendor that SHRINKS the count) are now deleted: the
+  orchestrator lists the vendor directory itself (`RepoSession.listDirectory`, new) and any file the
+  new plan does not write is removed via a `sha: null` git tree entry — the Git Data API's own
+  deletion mechanism. `argo-workflows.yaml`'s `.Files.Glob` concatenation now also asserts the
+  globbed part names are an exact, contiguous `01..N` sequence, failing closed on a gap or a leftover
+  as a render-time backstop.
+
 ## Second re-review (2026-09-25, same day) — the orchestrator did not distrust the sandbox enough
 
 The split itself (above) was confirmed sound — the trust BOUNDARY is right. What was NOT yet right

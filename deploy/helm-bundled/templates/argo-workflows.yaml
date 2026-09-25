@@ -32,6 +32,21 @@
 {{- if eq (len $partNames) 0 -}}
 {{- fail "commanderscp bundled argo-workflows: no vendor/argo-workflows/install-part-*.yaml files found — the vendored manifest is missing, was renamed, or the glob itself is broken. Fail-closed rather than render an empty backend." -}}
 {{- end -}}
+{{/* THE GLOB MUST FIND A CONTIGUOUS 01..N SEQUENCE, NEVER A GAP OR A LEFTOVER (2026-09-25 third
+     re-review) — this is the render-time BACKSTOP for the property `tools/vendor-refresh`'s own
+     re-vendor orchestrator is now responsible for maintaining (deleting a part number a shrunk
+     re-vendor no longer needs). A stale `install-part-04.yaml` orphaned by a re-vendor that failed
+     to delete it, or a `install-part-02.yaml` missing because ONE part failed to commit, both glob
+     successfully — `.Files.Glob` has no idea what SHOULD be there, only what IS. Checking the
+     SORTED names against the exact sequence `install-part-01.yaml`..`install-part-NN.yaml` is what
+     catches either: a gap breaks the sequence at the missing number, and an orphan breaks it by
+     adding a number beyond the true count. */}}
+{{- range $i, $p := $partNames -}}
+{{- $expected := printf "vendor/argo-workflows/install-part-%02d.yaml" (add $i 1) -}}
+{{- if ne $p $expected -}}
+{{- fail (printf "commanderscp bundled argo-workflows: found %d install-part-*.yaml file(s), but they are not a contiguous 01..%02d sequence — expected '%s' at position %d, found '%s'. A gap (a part failed to commit) or a leftover (a shrunk re-vendor failed to delete a stale part) would both produce a manifest that is neither the old nor the new one. Fail-closed rather than reassemble it." (len $partNames) (len $partNames) $expected (add $i 1) $p) -}}
+{{- end -}}
+{{- end -}}
 {{- range $p := $partNames -}}
 {{- $manifest = printf "%s\n---\n%s" $manifest (get $parts $p) -}}
 {{- end -}}

@@ -52,6 +52,10 @@ export interface RepoFile {
 /** The operations available WHILE the run's credential is alive. See docs/plugins.md §324. */
 export interface RepoSession {
   readFile(path: string, ref: string): Promise<RepoFile | undefined>;
+  /** Every repo-relative path currently under a directory, or `undefined` if the directory does not
+   *  exist. Used ONLY to compute stale-file deletions (2026-09-25 third re-review) — never to decide
+   *  what to WRITE, only what to remove that nothing declares any more. */
+  listDirectory(path: string, ref: string): Promise<readonly string[] | undefined>;
   publishBump(input: PublishBumpInput): Promise<RepoWriteResult>;
   /** The `re-vendor` strategy's publish — one commit, many files, built through the Git Data API
    *  (blob-per-file, one tree, one commit) rather than the Contents API's single-file PUT. */
@@ -121,6 +125,12 @@ export interface PublishVendorRefreshInput {
   files: readonly VendorRefreshFile[];
   /** Every path the `re-vendor` descriptor declared this backend may touch. */
   declaredManifestPaths: readonly string[];
+  /** STALE PATHS TO REMOVE (2026-09-25 third re-review — "delete stale install-part-NN.yaml when
+   *  upstream shrinks"): computed by the ORCHESTRATOR itself, from its own directory listing of the
+   *  vendor path, never from anything the sandbox reports. A git tree entry with `sha: null`, built
+   *  on `base_tree`, removes that path from the new commit — the Git Data API's own deletion
+   *  mechanism, not a second write pass. Each is still asserted `assertWritePath`-safe. */
+  deletePaths?: readonly string[];
   commitMessage: string;
   pullRequestTitle: string;
   pullRequestBody: string;
@@ -456,6 +466,31 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           };
         },
 
+        async listDirectory(path: string, ref: string): Promise<readonly string[] | undefined> {
+          assertWritePath(PROVIDER, path);
+          assertWriteBaseRef(PROVIDER, ref);
+          const res = await api(
+            "GET",
+            `/repos/${repo}/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(ref)}`
+          );
+          if (res.status === 404) return undefined;
+          if (res.status !== 200) {
+            throw new Error(
+              `managed-dep: listing '${path}' from '${repo}@${ref}' failed (HTTP ${res.status})`
+            );
+          }
+          // A DIRECTORY listing is an ARRAY (the same route `readFile` calls for a FILE, which
+          // returns a single object instead — the branch that function refuses, this one requires).
+          if (!Array.isArray(res.body)) {
+            throw new Error(
+              `managed-dep: '${path}' on '${repo}@${ref}' is a file, not a directory — cannot list it`
+            );
+          }
+          return res.body
+            .map((entry) => (entry as { path?: unknown }).path)
+            .filter((p): p is string => typeof p === "string");
+        },
+
         async publishBump({
           target,
           spec,
@@ -626,6 +661,7 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           target,
           files,
           declaredManifestPaths,
+          deletePaths,
           commitMessage,
           pullRequestTitle,
           pullRequestBody,
@@ -641,9 +677,9 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           assertMessageBound(commitMessage, MAX_COMMIT_MESSAGE_CHARS, "commit message");
           assertMessageBound(pullRequestTitle, MAX_PR_TITLE_CHARS, "pull-request title");
           assertMessageBound(pullRequestBody, MAX_PR_BODY_CHARS, "pull-request body");
-          if (files.length === 0) {
+          if (files.length === 0 && (deletePaths ?? []).length === 0) {
             throw new Error(
-              "managed-dep: publishVendorRefresh was given zero files — there is nothing to commit"
+              "managed-dep: publishVendorRefresh was given zero files and zero deletions — there is nothing to commit"
             );
           }
           const declared = new Set(declaredManifestPaths);
@@ -654,6 +690,7 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
             );
           }
           for (const file of files) assertWritePath(PROVIDER, file.path);
+          for (const path of deletePaths ?? []) assertWritePath(PROVIDER, path);
 
           // 1. Resolve the base branch's head COMMIT (not just its sha — the tree hangs off the
           //    commit, and `base_tree` is what lets the new tree include every file this commit does
@@ -689,7 +726,12 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           }
 
           // 2. ONE BLOB PER FILE.
-          const treeEntries: Array<{ path: string; mode: string; type: string; sha: string }> = [];
+          const treeEntries: Array<{
+            path: string;
+            mode: string;
+            type: string;
+            sha: string | null;
+          }> = [];
           for (const file of files) {
             const blob = await api("POST", `/repos/${target.repo}/git/blobs`, {
               content: Buffer.from(file.content, "utf8").toString("base64"),
@@ -705,6 +747,12 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
               throw new Error(`managed-dep: blob creation for '${file.path}' returned no sha`);
             }
             treeEntries.push({ path: file.path, mode: "100644", type: "blob", sha: blobSha });
+          }
+          // STALE-PATH DELETIONS (2026-09-25 third re-review) — a tree entry with `sha: null`,
+          // built on `base_tree`, is the Git Data API's own removal mechanism: no blob, no content,
+          // just "this path is gone in the new tree." No network round trip needed per deletion.
+          for (const path of deletePaths ?? []) {
+            treeEntries.push({ path, mode: "100644", type: "blob", sha: null });
           }
 
           // 3. ONE TREE, layered on the base branch's own tree — every file NOT in `files` is

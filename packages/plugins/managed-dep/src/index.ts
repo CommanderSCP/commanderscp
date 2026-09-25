@@ -788,7 +788,7 @@ async function triggerRevendor(
 
   try {
     const outcome = await writer.withRunCredential(ctx, descriptor.repo, async (session) => {
-      const { plan, classification, fetchNote } = await orchestrateRevendor(
+      const { plan, classification, fetchNote, deletePaths } = await orchestrateRevendor(
         ctx,
         {
           revendorRunnerImage: writerConfig.revendorRunnerImage!,
@@ -853,6 +853,9 @@ async function triggerRevendor(
         },
         files: plan.files,
         declaredManifestPaths: descriptor.declaredManifestPaths,
+        // STALE PARTS (2026-09-25 third re-review) — computed by orchestrateRevendor itself, from
+        // its own directory listing; never anything the sandbox reported.
+        deletePaths,
         commitMessage,
         pullRequestTitle: commitMessage,
         pullRequestBody,
