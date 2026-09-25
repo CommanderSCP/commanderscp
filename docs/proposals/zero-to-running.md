@@ -40,7 +40,7 @@ The steps they would then take, and where each breaks the goal:
 | First login | Bootstrap password printed once to the **api pod log** (`apps/server/src/auth/local-auth.ts:95-97`) | Requires `kubectl logs`: the first thing the customer does is leave SCP |
 | Argo CD / Gitea | `scp-bundled.sh enable <backend>`; auto-wire mints a token, **but never creates the execution-system object**, and the bind command is printed **only to the Job's pod log** (`apps/server/src/bundled-argocd-autowire-bin.ts:139-150`) | Half-wired; the finishing step is in a log |
 | Argo Workflows | Bundled, but **no auto-wire** (`deploy/helm/values.yaml:707-718`, whose comment is also stale: the bundled server runs `--auth-mode=client`); TLS trust (`executorTls`) set by hand from a hint the script prints | Token, TLS and registration all manual |
-| Gitea (BYO) | No `scp connect gitea`, no wizard; only `scp executor bind --module gitea` | No guided path |
+| Gitea | **Bundled:** `scp-bundled.sh enable gitea` stands it up and auto-wire mints its token, with the same execution-system gap as Argo CD. **An existing Gitea** (bring-your-own): no `scp connect gitea` and no wizard, only `scp executor bind --module gitea` | Bundled Gitea is half-wired; connecting an existing one has no guided path |
 | Egress | Declared in SCP **and** allowed again in operator env (`SCP_INTERNAL_EGRESS_HOSTS`) **and** in NetworkPolicy values (`deploy/helm/values.yaml:936-939`) | Three places; any one missing fails quietly |
 | Canary | Host the authoring carrier chart in a repo **you control**, then re-run `scp connect argocd --authoring-*` (ADR-0055); omit it and the canary **silently becomes a plain rolling update** | Needs a repo the customer does not have yet |
 | Build / infra | Hand-create `scp-build-registry`, `scp-infra-plan-credentials`, `scp-infra-apply-credentials` Secrets in the Argo namespace; set chart values without which the RPM and infra templates **silently do not render** | `kubectl create secret` and chart values |
@@ -77,6 +77,9 @@ with. The customer never picks an Argo version.
 1. **Install, one command, any substrate.** `scp install --role commander|outpost|retrans [--profile eval|production]
    [--bundle <air-gap bundle>]`, run against a kube context or a VM (compose). It installs SCP, the stack controller and the
    role's default stack, then prints the admin URL and a one-time password **to the installer's own terminal**.
+   The stack is presented as choices with the role's defaults pre-selected (for example Gitea as the registry
+   and git forge on a commander or outpost). The user can switch any backend off, or point SCP at one they
+   already run (an existing Gitea, GHCR, Argo CD). Whatever stays selected is stood up and wired automatically.
 2. **First run is a wizard, not a dashboard.** An org with nothing configured lands on the first-run flow (today's `/setup`
    checklist, promoted to the home route):
    - connect a source (GitHub/GitLab app, or the bundled Gitea);
