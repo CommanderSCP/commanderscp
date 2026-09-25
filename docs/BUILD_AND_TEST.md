@@ -2210,6 +2210,26 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     - **DoD:** enabling and disabling a backend through the API alone installs and removes it on kind; a forced unhealthy
       upgrade falls back; deleting the reconcile wiring turns a test red; no tenant-writable field reaches the
       controller (census).
+    - **State (2026-09-24, ADR-0058): BUILT, PR open.** `apps/stackd` + image `scp-stackd`; drizzle/0126
+      (`stack_backends`, `stack_settings`); `/api/v1/instance/stack*`; `ScpClient.stack`; `scp stack
+      status|enable|disable|upgrade|updates|diagnostics`; Admin › Stack; the main chart's `stackd.*` (off by default
+      until M29.1's installer turns it on — the flip is planned in ADR-0058). IaC: not applicable, by design (ADR-0058
+      §8). How each DoD item is proved:
+      - *enable/disable on kind, forced unhealthy upgrade falls back*: `apps/server/src/stack/stack-controller.kind.test.ts`
+        in job 4e — a real scpd, the real controller, the chart's own stackd RBAC, Argo Events from a registry inside
+        the kind network. Also run locally with the WHOLE main chart and the real `scp-stackd` image in-cluster (Argo
+        Events, Argo Workflows, Gitea; a release upgrade rolled both enabled backends one at a time).
+      - *deleting the reconcile wiring*: kind suite + `reconcile.test.ts` go red; `stack-controller-reachability.test.ts`
+        holds every load-bearing function to a production caller.
+      - *no tenant-writable field reaches the controller*: `stack-spec-census.test.ts` (no free string in the spec),
+        `controller-inputs.test.ts` (one client, two operations), `values.test.ts` (every rendered value traces to an
+        allowed source), `stack.integration.test.ts` (scp_app cannot write either table, asserted as scp_app).
+      - *scpd gains no Kubernetes rights*: `tools/helm-verify/src/stackd.ts`.
+      - **What the kind runs found**, worth knowing: a readiness rule weaker than `kubectl rollout status` called a
+        stalled rollout over a still-available old pod healthy; and Gitea's vendored surge strategy can never complete
+        on its RWO volume (fixed: `Recreate`, censused). **What the DoD does not prove**: the in-cluster pod path runs
+        in CI only through the image suite (`--self-test`) — the full-chart run is local and recorded in the PR; an
+        evalInCluster `helm upgrade` of the main chart fails on the postgres-eval hook PVC (pre-existing, not stackd).
   - **M29.5 — credentials through SCP (D2).** A write-only passthrough, from the API to the controller to the backend's
     Secret; `scpd` persists nothing and cannot read it back. The audit records the key, never the value. Workload identity
     is preferred where available.
