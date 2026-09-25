@@ -58,7 +58,20 @@ sshd_fixture_hash=$(find tools/sshd-fixture -type f -exec sha256sum {} + | sort 
 # is the whole input.
 builder_rpm_hash=$(find apps/builder-rpm -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)
 
+# scp-stackd (M29.4): the Standard Stack controller. NOT a runner and not built from its own
+# directory alone — it bundles workspace packages and CARRIES the vendored chart and the helm pin
+# (E4: the image IS the release's stack), so every one of those is part of what it is. A chart bump
+# with no controller change must still yield a new image.
+stackd_hash=$(
+  {
+    find apps/stackd packages/schemas/src packages/sdk/src deploy/helm-bundled -type f \
+      -not -path '*/node_modules/*' -not -path '*/dist/*' -not -path '*/bundle/*' -exec sha256sum {} +
+    sha256sum tools/helm/pin.env tools/node/pin.env pnpm-lock.yaml package.json tsconfig.base.json
+  } | sort | sha256sum | cut -c1-16
+)
+
 echo "SCP_RUNNER_SCAN_IMAGE_REF=${registry}/scp-runner-scan:${scan_hash}"
+echo "SCP_STACKD_IMAGE_REF=${registry}/scp-stackd:${stackd_hash}"
 echo "SCP_RUNNER_IAC_IMAGE_REF=${registry}/scp-runner-iac:${iac_hash}"
 echo "SCP_RUNNER_DEP_IMAGE_REF=${registry}/scp-runner-dep:${dep_hash}"
 echo "SCP_RUNNER_OPS_IMAGE_REF=${registry}/scp-runner-ops:${ops_hash}"

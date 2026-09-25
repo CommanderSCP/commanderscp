@@ -335,15 +335,21 @@ jobs:
       - name: Pull each pre-built runner image, or build+push once on a cache miss
         run: |
           build_and_push() {
-            image="$1"; context="$2"
+            image="$1"; context="$2"; dockerfile="${3:-}"
             if docker pull "$image"; then
               echo "cache hit: $image already in GHCR — no build needed."
             else
               echo "cache miss: building $image from $context and pushing to GHCR."
-              DOCKER_BUILDKIT=0 docker build -t "$image" "$context"
+              DOCKER_BUILDKIT=0 docker build ${dockerfile:+-f "$dockerfile"} -t "$image" "$context"
               docker push "$image"
             fi
           }
+          # M29.4 — scp-stackd, the Standard Stack controller. Built from the REPO ROOT (it bundles
+          # workspace packages) and asked to render every backend with its pinned helm before it is
+          # trusted; `apps/stackd/src/image.integration.test.ts` then asks the pulled artifact what
+          # it carries. Its tag hashes the chart and the helm pin too (runner-image-tags.sh).
+          build_and_push "$SCP_STACKD_IMAGE_REF" . apps/stackd/Dockerfile
+          docker run --rm --network none "$SCP_STACKD_IMAGE_REF" --self-test
           build_and_push "$SCP_RUNNER_SCAN_IMAGE_REF" apps/runner-scan
           build_and_push "$SCP_RUNNER_IAC_IMAGE_REF" apps/runner-iac
           # M21.5 — scp-runner-dep, the isolated editor scp-managed-dep launches per bump. Built and
@@ -709,7 +715,7 @@ jobs:
       - name: Pull the pre-built runner images (in parallel — the pulls share no layers)
         run: |
           pids=""
-          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF" "$SCP_BUILDER_RPM_IMAGE_REF"; do
+          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF" "$SCP_BUILDER_RPM_IMAGE_REF" "$SCP_STACKD_IMAGE_REF"; do
             docker pull "$ref" & pids="$pids $!"
           done
           # `wait` PER PID, not a bare `wait`: a bare one exits 0 even when a pull failed.

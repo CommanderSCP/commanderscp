@@ -41,11 +41,13 @@ RUN echo "${HELM_TARBALL_SHA256}  /tmp/helm.tgz" | sha256sum -c - \
 
 FROM ${NODE_IMAGE} AS runtime
 # Same hardening as the root Dockerfile's runtime stage: Debian security fixes folded in, npm /
-# corepack / npx deleted (nothing here runs a package manager), perl-base removed.
+# corepack / npx deleted (nothing here runs a package manager), perl-base removed — and yarn too,
+# which the upstream Node image also ships (found by image.integration.test.ts, not by reading).
 RUN apt-get update \
   && apt-get upgrade -y \
   && rm -rf /var/lib/apt/lists/* \
   && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+  && rm -rf /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
   && dpkg --purge --force-remove-essential --force-depends perl-base
 ENV NODE_ENV=production
 COPY --from=helm /tmp/linux-amd64/helm /opt/scp/bin/helm

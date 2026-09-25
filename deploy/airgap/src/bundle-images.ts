@@ -76,6 +76,17 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     flagDescription: "scp-runner-ops image reference to bundle",
     doc: "the isolated host-reaching Ansible catalog runner, charter-allowlisted (env: SCP_MANAGED_OPS_RUNNER_IMAGE)"
   },
+  // The Standard Stack controller (M29.4, ADR-0058). First-party, built from apps/stackd with the
+  // repo root as context. Not a runner: a long-running Deployment of the main chart. install.sh
+  // retargets it (stackd.image.*) and hands it the bundled backends' retargets (stackd.imageOverrides).
+  {
+    name: "scp-stackd",
+    optionStem: "stackd",
+    defaultRef: "scp-stackd:dev",
+    defaultSource: "docker-daemon",
+    flagDescription: "scp-stackd (the Standard Stack controller) image reference to bundle",
+    doc: "the Standard Stack controller — installs and upgrades the bundled backends (stackd.image)"
+  },
   {
     name: "postgres-eval",
     optionStem: "postgres",

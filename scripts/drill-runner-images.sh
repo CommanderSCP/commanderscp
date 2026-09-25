@@ -71,9 +71,16 @@ ensure_runner_source_images() {
     }
   fi
 
+  # scp-stackd (M29.4): the Standard Stack controller, built for real — a bundled Node file on the
+  # pinned Node base plus the pinned helm. Built from the REPO ROOT (it bundles workspace packages).
+  STACKD_REF="${STACKD_REF:-scp-stackd:dev}"
+  docker image inspect "$STACKD_REF" >/dev/null 2>&1 ||
+    docker build -f apps/stackd/Dockerfile -t "$STACKD_REF" .
+
   BUNDLE_RUNNER_ARGS=(
     --runner-iac-ref "$RUNNER_IAC_REF"
     --runner-scan-ref "$RUNNER_SCAN_REF"
     --runner-dep-ref "$RUNNER_DEP_REF"
+    --stackd-ref "$STACKD_REF"
   )
 }

@@ -94,11 +94,24 @@ jobs:
           docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/builder-rpm
           docker push "$IMAGE:sha-${{ github.sha }}"
           docker push "$IMAGE:latest"
+      - name: Build + push scp-stackd (apps/stackd — the Standard Stack controller)
+        # M29.4 (ADR-0058) — tagged IDENTICALLY to scpd, because the chart's `stackd.image.tag`
+        # defaults to scpd's: the stack's versions ARE the SCP release's (E4), so one release is one
+        # tag across both images. Built from the REPO ROOT (it bundles workspace packages), and
+        # `--self-test` renders every backend with the pinned helm before anything is pushed.
+        run: |
+          IMAGE="ghcr.io/commanderscp/scp-stackd"
+          docker build -f apps/stackd/Dockerfile -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" .
+          docker run --rm "$IMAGE:sha-${{ github.sha }}" --self-test
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          docker push "$IMAGE:latest"
       - name: Emit pinned refs + digests (paste into the consuming gitops values)
         run: |
           {
             echo "## Published images"
             echo '```'
+            echo "scp-stackd:     ghcr.io/commanderscp/scp-stackd:sha-${{ github.sha }}"
+            docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-stackd:sha-${{ github.sha }}" || true
             echo "scpd:           ghcr.io/commanderscp/scpd:sha-${{ github.sha }}"
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scpd:sha-${{ github.sha }}" || true
             echo "scp-runner-iac: ghcr.io/commanderscp/scp-runner-iac:sha-${{ github.sha }}"

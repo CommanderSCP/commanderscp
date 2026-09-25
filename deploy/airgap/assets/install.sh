@@ -434,6 +434,35 @@ if [[ "$MODE" == "helm" ]]; then
   fi
   # NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
   # existing Harbor is served via the import path (coordinated as an execution system), not bundled.
+  #
+  # ---- THE STACK CONTROLLER (scp-stackd, M29.4, ADR-0058) ----------------------------------------
+  # Its own image, retargeted like scpd's; and the SAME bundled-backend retargets computed above,
+  # handed to it as `stackd.imageOverrides` — so when the controller installs a backend (the Stack
+  # page, `scp stack enable`), it pulls the bytes this bundle carried from this registry, never
+  # quay.io. Only the controller's retargetable image fields are passed (the controller refuses any
+  # other key): catalog.ops.runnerImage is not one — the controller renders no ops catalog. This
+  # sets the values; it does not turn the controller on (`stackd.enabled` — M29.1's installer does).
+  if [[ -n "${SCP_STACKD_DIGEST:-}" ]]; then
+    HELM_ARGS+=(--set "stackd.image.repository=${REGISTRY}/scp-stackd"
+      --set "stackd.image.tag=${BUNDLE_VERSION}@${SCP_STACKD_DIGEST}")
+    STACKD_OVERRIDES=""
+    for kv in ${BUNDLED_SET_ARGOCD[@]+"${BUNDLED_SET_ARGOCD[@]}"} \
+              ${BUNDLED_SET_WORKFLOWS[@]+"${BUNDLED_SET_WORKFLOWS[@]}"} \
+              ${BUNDLED_SET_ROLLOUTS[@]+"${BUNDLED_SET_ROLLOUTS[@]}"} \
+              ${BUNDLED_SET_EVENTS[@]+"${BUNDLED_SET_EVENTS[@]}"} \
+              ${BUNDLED_SET_GITEA[@]+"${BUNDLED_SET_GITEA[@]}"}; do
+      [[ "$kv" == bundledExecutor.* ]] || continue
+      key="${kv%%=*}"; key="${key#bundledExecutor.}"; ref="${kv#*=}"
+      case "$key" in
+        argocd.image|argocd.valkeyImage|argoWorkflows.serverImage|argoWorkflows.controllerImage|\
+        argoWorkflows.catalog.buildImage.builderImage|argoWorkflows.catalog.buildImage.gitImage|\
+        argoWorkflows.catalog.buildRpm.builderImage|argoWorkflows.catalog.infra.image|\
+        argoRollouts.image|argoEvents.image|gitea.image)
+          STACKD_OVERRIDES="${STACKD_OVERRIDES:+${STACKD_OVERRIDES},}\"${key}\":\"${ref}\"" ;;
+      esac
+    done
+    HELM_ARGS+=(--set-json "stackd.imageOverrides={${STACKD_OVERRIDES}}")
+  fi
   if [[ -n "$NAMESPACE" ]]; then
     HELM_ARGS+=(--namespace "$NAMESPACE" --create-namespace)
   fi

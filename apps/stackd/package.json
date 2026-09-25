@@ -10,7 +10,8 @@
     "bundle": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=bundle/stackd.mjs --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests ${SCP_INTEGRATION_SHARD:-}"
   },
   "dependencies": {
     "@scp/schemas": "workspace:*",
