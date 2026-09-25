@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, RefreshCw, ServerCog, ShieldCheck } from "lucide-react";
+import { Download, KeyRound, RefreshCw, ServerCog, ShieldCheck } from "lucide-react";
 import {
   StackBackendSchema,
   type StackBackend,
   type StackBackendPhase,
   type StackBackendView,
+  type StackServedOrgList,
   type StackSizeTier,
   type StackUpdatePolicy,
   type StackView
@@ -45,6 +46,11 @@ import { formatRelative } from "./admin-dependencies";
  * Honesty (design spec §1.5): an enabled backend the controller has not reported is "pending", in
  * the amber-dashed unknown tone, never a guessed phase; a controller that has stopped reporting is
  * said so above the table, and its last report is labelled as such.
+ *
+ * M29.2 (ADR-0060): each backend's WIRING into SCP — where scpd reaches it, whether its scoped
+ * token and TLS trust are handed over — with a Rotate action, and the organizations the stack
+ * serves (its wired backends are registered in each). Serving another org is an instance
+ * decision: every served org drives the same scoped backend accounts.
  */
 
 export const stackKey = (): unknown[] => ["stack"];
@@ -142,6 +148,45 @@ function PhaseCell({ b }: { b: StackBackendView }): React.JSX.Element {
   );
 }
 
+function WiringCell({ b }: { b: StackBackendView }): React.JSX.Element {
+  const w = b.wiring;
+  if (w === null) {
+    return (
+      <span
+        className="text-xs text-slate-400"
+        data-testid={`stack-wiring-${b.backend}`}
+        title="SCP never calls this backend (it reads rollout state through Argo CD), so there is nothing to wire"
+      >
+        n/a
+      </span>
+    );
+  }
+  if (!w.wired) {
+    return (
+      <span className="text-xs text-slate-400" data-testid={`stack-wiring-${b.backend}`}>
+        {b.enabled ? "not yet" : "—"}
+      </span>
+    );
+  }
+  return (
+    <span className="flex flex-col gap-0.5 text-xs" data-testid={`stack-wiring-${b.backend}`}>
+      <Badge variant="success">wired</Badge>
+      {w.serverUrl ? (
+        <span className="font-mono text-slate-600" title="Where scpd reaches it">
+          {w.serverUrl}
+        </span>
+      ) : (
+        <span className="text-slate-500">registered (SCP does not call it)</span>
+      )}
+      {w.caSha256 ? (
+        <span className="font-mono text-slate-400" title="sha256 of the CA scpd trusts for it">
+          CA {w.caSha256.slice(0, 12)}…
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function PurgeControl({
   backend,
   busy,
@@ -196,13 +241,15 @@ function BackendRow({
   canChange,
   busy,
   onWrite,
-  onPurge
+  onPurge,
+  onRotate
 }: {
   b: StackBackendView;
   canChange: boolean;
   busy: boolean;
   onWrite: (backend: StackBackend, enabled: boolean, sizeTier?: StackSizeTier) => void;
   onPurge: (backend: StackBackend) => void;
+  onRotate: (backend: StackBackend) => void;
 }): React.JSX.Element {
   const s = b.status;
   const why = canChange ? undefined : NO_ROLE;
@@ -238,6 +285,9 @@ function BackendRow({
           ))}
         </select>
       </TableCell>
+      <TableCell>
+        <WiringCell b={b} />
+      </TableCell>
       <TableCell className="max-w-md text-xs">
         {s && s.needs.length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid={`stack-needs-${b.backend}`}>
@@ -258,6 +308,22 @@ function BackendRow({
         <span className="flex items-center justify-end gap-2">
           {!b.enabled && canChange ? (
             <PurgeControl backend={b.backend} busy={busy} onPurge={onPurge} />
+          ) : null}
+          {b.enabled && b.wiring?.wired && b.wiring.serverUrl ? (
+            <Button
+              size="sm"
+              variant="outline"
+              icon={KeyRound}
+              data-testid={`stack-rotate-${b.backend}`}
+              disabled={!canChange || busy}
+              title={
+                why ??
+                "Rotate: the stack controller mints a new scoped token (for Argo Workflows also a new server certificate), hands it to SCP, and revokes the old one"
+              }
+              onClick={() => onRotate(b.backend)}
+            >
+              Rotate
+            </Button>
           ) : null}
           <Button
             size="sm"
@@ -284,6 +350,104 @@ const NO_ROLE =
   "Changing the stack needs the instance-operator role — ask an instance operator to grant it";
 
 export const instanceOperatorSelfKey = (): unknown[] => ["instance-operator", "self"];
+export const stackOrgsKey = (): unknown[] => ["stack", "orgs"];
+
+/** M29.2: the organizations the stack serves — an instance operator's list and decision. */
+function ServedOrgs({
+  busy,
+  onChange
+}: {
+  busy: boolean;
+  onChange: (what: string, call: () => Promise<StackServedOrgList>) => void;
+}): React.JSX.Element {
+  const orgs = useQuery({ queryKey: stackOrgsKey(), queryFn: () => client.stack.orgs() });
+  const [orgId, setOrgId] = useState("");
+  return (
+    <Card>
+      <div className="flex flex-col gap-3" data-testid="stack-orgs">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">Organizations served</h2>
+          <p className="text-xs text-slate-500">
+            Every wired backend is registered in each of these as an execution system. They all
+            drive the SAME scoped backend accounts, so serving another organization gives its
+            tenants reach into what the others run there.
+          </p>
+        </div>
+        {orgs.isError ? (
+          <QueryErrorNotice
+            error={orgs.error}
+            what="the served organizations"
+            testId="stack-orgs-error"
+          />
+        ) : orgs.data === undefined ? (
+          <SkeletonRows n={2} />
+        ) : (
+          <ul className="flex flex-col gap-1 text-xs">
+            {orgs.data.items.length === 0 ? (
+              <li className="text-slate-500" data-testid="stack-orgs-none">
+                None yet — the deployment's bootstrap organization is served when the first backend
+                is wired.
+              </li>
+            ) : (
+              orgs.data.items.map((o) => (
+                <li
+                  key={o.orgId}
+                  className="flex items-center justify-between gap-2"
+                  data-testid={`stack-org-${o.orgId}`}
+                >
+                  <span>
+                    <span className="font-medium text-slate-900">{o.orgName}</span>{" "}
+                    <span className="font-mono text-slate-400">{o.orgId}</span>{" "}
+                    <span className="text-slate-500">
+                      ·{" "}
+                      {o.attachedBy.mechanism === "install"
+                        ? "by default"
+                        : `by ${o.attachedBy.username ?? o.attachedBy.mechanism}`}
+                    </span>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid={`stack-org-detach-${o.orgId}`}
+                    disabled={busy}
+                    onClick={() =>
+                      onChange(`${o.orgName} is no longer served.`, () =>
+                        client.stack.detachOrg(o.orgId)
+                      )
+                    }
+                  >
+                    Stop serving
+                  </Button>
+                </li>
+              ))
+            )}
+          </ul>
+        )}
+        <div className="flex items-center gap-2">
+          <Input
+            aria-label="Organization id to serve"
+            placeholder="organization id"
+            className="h-8 w-80 font-mono text-xs"
+            data-testid="stack-org-attach-id"
+            value={orgId}
+            onChange={(e) => setOrgId(e.target.value.trim())}
+          />
+          <Button
+            size="sm"
+            data-testid="stack-org-attach"
+            disabled={busy || !/^[0-9a-f-]{36}$/i.test(orgId)}
+            onClick={() => {
+              onChange("Organization served.", () => client.stack.attachOrg(orgId));
+              setOrgId("");
+            }}
+          >
+            Serve
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 export function AdminStackPage(): React.JSX.Element {
   const queryClient = useQueryClient();
@@ -324,6 +488,18 @@ export function AdminStackPage(): React.JSX.Element {
         : `${DISPLAY[backend]} ${enabled ? "enabled" : "disabled"}.`,
       () => client.stack.putBackend(backend, { enabled, ...(sizeTier ? { sizeTier } : {}) })
     );
+
+  const onRotate = (backend: StackBackend) =>
+    void write(
+      `${DISPLAY[backend]}: rotation requested — the controller re-mints and hands over new credentials.`,
+      () => client.stack.rotate(backend)
+    );
+
+  const onOrgs = (what: string, call: () => Promise<StackServedOrgList>) =>
+    void write(what, async () => {
+      queryClient.setQueryData(stackOrgsKey(), await call());
+      await queryClient.invalidateQueries({ queryKey: stackKey() });
+    });
 
   const onPurge = (backend: StackBackend) =>
     void write(`${DISPLAY[backend]}'s retained data will be deleted.`, () =>
@@ -409,6 +585,13 @@ export function AdminStackPage(): React.JSX.Element {
       ) : (
         <>
           <ControllerLine view={view} now={now} />
+          {view.servesThisOrg !== null ? (
+            <p className="text-xs text-slate-500" data-testid="stack-serves-this-org">
+              {view.servesThisOrg
+                ? "This organization is served: every wired backend is registered here as an execution system."
+                : "This organization is not served by the Standard Stack — an instance operator decides which organizations it serves."}
+            </p>
+          ) : null}
           <Card size="flush">
             <Table>
               <TableHeader>
@@ -417,6 +600,7 @@ export function AdminStackPage(): React.JSX.Element {
                   <TableHead>Phase</TableHead>
                   <TableHead>Version</TableHead>
                   <TableHead>Size</TableHead>
+                  <TableHead>Wired into SCP</TableHead>
                   <TableHead>Needs</TableHead>
                   <TableHead className="text-right">
                     <ServerCog className="ml-auto size-4 text-slate-400" aria-label="Action" />
@@ -434,6 +618,7 @@ export function AdminStackPage(): React.JSX.Element {
                       busy={busy}
                       onWrite={onWrite}
                       onPurge={onPurge}
+                      onRotate={onRotate}
                     />
                   ) : null;
                 })}
@@ -461,6 +646,7 @@ export function AdminStackPage(): React.JSX.Element {
               when a new release is installed
             </span>
           </div>
+          {canChange ? <ServedOrgs busy={busy} onChange={onOrgs} /> : null}
         </>
       )}
     </div>

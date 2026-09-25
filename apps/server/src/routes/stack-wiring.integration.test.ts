@@ -379,6 +379,50 @@ describe("M29.2 the Standard Stack wires its backends into SCP (Testcontainers, 
     expect(resolved.trustedCaPem).toBeUndefined();
   });
 
+  it("a DISCOVERY run against the registration takes the endpoint, token, CA and egress from the wiring — a caller's baseUrl/serverUrl/token are dropped", async () => {
+    const sysId = (await registrationIdIn(bootstrap.orgId, "argocd"))!;
+    const started: Record<string, unknown>[] = [];
+    const previous = server.deps.pluginHost;
+    server.deps.pluginHost = {
+      start: async (instances: Record<string, unknown>[]) => {
+        started.push(...instances);
+      },
+      discovery: () => ({ discover: async () => ({ objects: [], relationships: [] }) })
+    } as never;
+    try {
+      await tenant.discovery.run({
+        pluginModule: "argocd-discovery",
+        pluginInstanceId: "wiring-discovery-probe",
+        config: {
+          executionSystemId: sysId,
+          baseUrl: "http://evil.attacker.svc",
+          serverUrl: "http://evil.attacker.svc",
+          token: "tenant-chosen",
+          tokenSecretKey: "mine"
+        }
+      });
+    } finally {
+      server.deps.pluginHost = previous;
+    }
+    expect(started).toHaveLength(1);
+    const inst = started[0] as {
+      config: Record<string, unknown>;
+      secrets: Record<string, string>;
+      allowedHosts: string[];
+      allowInternalEgress: boolean;
+    };
+    expect(inst.config).toMatchObject({
+      serverUrl: ARGOCD_URL,
+      tokenSecretKey: STACK_TOKEN_SECRET_FIELD,
+      executionSystemId: sysId
+    });
+    expect(inst.config).not.toHaveProperty("baseUrl");
+    expect(inst.config).not.toHaveProperty("token");
+    expect(inst.secrets).toEqual({ [STACK_TOKEN_SECRET_FIELD]: MINTED });
+    expect(inst.allowedHosts).toEqual(["argocd-server.scp-argocd.svc"]);
+    expect(inst.allowInternalEgress).toBe(true);
+  });
+
   it("another org is NOT served until an instance operator serves it — and cannot read a stack token even in its own tenant tx", async () => {
     expect(await registrationIdIn(other.orgId, "argocd")).toBeUndefined();
     expect((await view(otherTenant)).servesThisOrg).toBe(false);

@@ -448,6 +448,15 @@ describe("M29.2 the auto-wire (wiring.ts)", () => {
     expect(r.kube.find("NetworkPolicy", egressPolicyName("argocd"), SCP_NS)).toBeUndefined();
   });
 
+  it("unwiring a backend SCP does not call touches no egress policy — the RBAC names only the three (found on kind: a 403)", async () => {
+    const r = rig();
+    // stackd-rbac.yaml holds delete to the three called backends' policy names.
+    r.kube.forbidden.add("DELETE NetworkPolicy/scp-stack-egress-argo-events");
+    await unwireBackend(r.deps, "argo-events", { wasWired: true });
+    expect(r.withdrawals).toEqual(["argo-events"]);
+    expect(r.kube.calls.some((c) => c.kind === "NetworkPolicy")).toBe(false);
+  });
+
   it("unwiring: scpd first, then the egress policy, then (if it was wired) the backend's tokens", async () => {
     const r = rig();
     await wire(r, "argocd");

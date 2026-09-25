@@ -61,7 +61,25 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
     "holds every render and every stored set to the kinds and namespace a backend may contain",
   refViolation: "is what a prune checks before it deletes anything",
   stateDigests: "is what the controller reports to scpd about the state it left",
-  inventoryDigest: "is how the controller checks its stored inventory against scpd's record"
+  inventoryDigest: "is how the controller checks its stored inventory against scpd's record",
+  // M29.2 (ADR-0060): the auto-wire. Controller half, then scpd half.
+  wireBackend:
+    "is the wiring step itself — token, CA, both egress layers, the hand-off; with no caller every backend installs and stays unwired",
+  unwireBackend: "takes the wiring back before a disabled backend is removed",
+  nodeBackendHttp: "is the controller's only client for the backends' own APIs (the token mint)",
+  storeWiring:
+    "persists the hand-off — the token encrypted at the instance tier, the facts, the audit link",
+  dropWiring: "withdraws a backend's token and wiring when the controller unwires it",
+  validateWiring: "holds each backend's hand-off to its shape before anything is stored",
+  reconcileStackRegistrations:
+    "registers the execution systems in every served org; with no caller a wired backend is registered nowhere",
+  stackWiredRouting:
+    "is the ONE place a stack registration's endpoint, token, CA and egress come from; with no caller the resolver routes it by its properties",
+  assertStackRegistrationWrite:
+    "refuses every writer but the stack at the object write choke point — the tenant re-point refusal",
+  attachServedOrg: "is the instance operator's decision to serve another organization",
+  detachServedOrg: "stops serving one",
+  listServedOrgs: "is the served-organizations read"
 };
 
 const isTest = (p: string): boolean =>

@@ -132,6 +132,10 @@ describe("buildChecklistRows — the honesty math behind every count", () => {
     const rows = buildChecklistRows({});
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r.to]));
     expect(byKey["execution-systems"]).toBe("/connect/argocd");
+    // M29.2: an EXISTING Gitea has its own wizard too, reachable from the same row.
+    expect(rows.find((r) => r.key === "execution-systems")?.more?.map((m) => m.to)).toEqual([
+      "/connect/gitea"
+    ]);
     expect(byKey["deployment-targets"]).toBe("/deployment-targets");
     expect(byKey["placements"]).toBe("/components");
     expect(byKey["domain-local"]).toBe("/components");
@@ -155,6 +159,7 @@ describe("SetupChecklistCard — rendering", () => {
 
     const execRow = elementByTestId(html, "setup-row-execution-systems");
     expect(execRow).toContain('href="/connect/argocd"');
+    expect(execRow).toContain('href="/connect/gitea"');
     expect(elementByTestId(execRow, "setup-row-execution-systems-count")).toContain(">2<");
 
     const targetsRow = elementByTestId(html, "setup-row-deployment-targets");

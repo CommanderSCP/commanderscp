@@ -88,6 +88,19 @@ const KNOWN_DISCOVERY_MODULES: PluginModule[] = [
   "argocd-discovery"
 ];
 
+/** M29.2 (ADR-0060): run-config keys a discovery against a Standard Stack registration never takes
+ *  from the caller — each names an endpoint or a credential, which only the wiring decides. */
+const STACK_RUN_CONFIG_REFUSED = new Set([
+  "serverUrl",
+  "baseUrl",
+  "apiBaseUrl",
+  "url",
+  "token",
+  "tokenPlaintext",
+  "tokenSecretKey",
+  "namespace"
+]);
+
 /** Bind a target object to a registered `execution-system`. See docs/routes.md §170. */
 async function bindTargetToExecutionSystem(
   tx: TenantTx,
@@ -966,8 +979,17 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             allowInternalEgress?: boolean;
           };
           if (stack) {
+            // The caller's run config (owner/repo …) minus every key that could name an endpoint
+            // or a credential: a plugin's explicit `baseUrl` outranks `serverUrl` (gitea), so a
+            // caller-sent one would re-point the stack token — held back here, and by the egress
+            // pin to the wiring's host underneath (M29.2, the M28 class).
+            const callerConfig = Object.fromEntries(
+              Object.entries((request.body.config as Record<string, unknown>) ?? {}).filter(
+                ([k]) => !STACK_RUN_CONFIG_REFUSED.has(k)
+              )
+            );
             effectiveConfig = {
-              ...((request.body.config as Record<string, unknown>) ?? {}),
+              ...callerConfig,
               // Server-governed — these WIN over anything the caller sent.
               ...stack.config
             };
