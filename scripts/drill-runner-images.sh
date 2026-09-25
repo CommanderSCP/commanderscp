@@ -32,12 +32,24 @@
 # real scanner image was bundled. Set AIRGAP_DRILL_RUNNER_SCAN_REF / ANSIBLE_DRILL_RUNNER_SCAN_REF
 # to a real `scp-runner-scan` image for a full-fidelity run.
 #
+# THE SAME, FOR scp-builder-rpm. An AlmaLinux 9 base that dnf-installs rpmbuild — a network fetch
+# from an EL mirror at build time, and nothing the drills read: the bundle only signs, copies and
+# pins it. So it gets the same named stand-in (`scp-builder-rpm-drill-standin`); set
+# BUILDER_RPM_REF to a real image for a full-fidelity run.
+#
+# EVERY IMAGE THE BUNDLE COPIES FROM THE LOCAL DAEMON IS PREPARED HERE (or passed by the drill
+# itself: scpd, postgres) — deploy/airgap `drill-images.test.ts` reads this file against the
+# canonical list, so the next daemon-sourced image cannot be missed the way scp-runner-ops and
+# scp-builder-rpm were (review of #421: neither was ever built nor passed, so `build-bundle` looked
+# for `:dev` tags that no drill had made).
+#
 # Callers set these first (any may be empty -> defaulted here):
-#   RUNNER_IAC_REF, RUNNER_SCAN_REF, RUNNER_DEP_REF
+#   RUNNER_IAC_REF, RUNNER_SCAN_REF, RUNNER_DEP_REF, RUNNER_OPS_REF, STACKD_REF, BUILDER_RPM_REF
 
 # Tag the drill stand-in carries. Deliberately NOT `scp-runner-scan:dev` — a stand-in must never be
 # addressable by the name of the thing it stands in for.
 DRILL_SCAN_STANDIN_TAG="scp-runner-scan-drill-standin:dev"
+DRILL_BUILDER_RPM_STANDIN_TAG="scp-builder-rpm-drill-standin:dev"
 
 ensure_runner_source_images() {
   RUNNER_IAC_REF="${RUNNER_IAC_REF:-scp-runner-iac:dev}"
@@ -71,6 +83,29 @@ ensure_runner_source_images() {
     }
   fi
 
+  # scp-runner-ops (M27.1): a pinned python-alpine base plus a pinned ansible-core and the vendored
+  # catalog — small, so built for real.
+  RUNNER_OPS_REF="${RUNNER_OPS_REF:-scp-runner-ops:dev}"
+  docker image inspect "$RUNNER_OPS_REF" >/dev/null 2>&1 ||
+    docker build -t "$RUNNER_OPS_REF" apps/runner-ops
+
+  if [ -z "${BUILDER_RPM_REF:-}" ]; then
+    BUILDER_RPM_REF="$DRILL_BUILDER_RPM_STANDIN_TAG"
+    echo "    scp-builder-rpm: using the drill STAND-IN ($BUILDER_RPM_REF) — see" \
+      "scripts/drill-runner-images.sh for why; override with BUILDER_RPM_REF"
+    if ! docker image inspect "$BUILDER_RPM_REF" >/dev/null 2>&1; then
+      # shellcheck disable=SC1091
+      . tools/busybox/pin.env
+      docker pull "$BUSYBOX_PINNED_IMAGE"
+      docker tag "$BUSYBOX_PINNED_IMAGE" "$BUILDER_RPM_REF"
+    fi
+  else
+    docker image inspect "$BUILDER_RPM_REF" >/dev/null 2>&1 || {
+      echo "builder-rpm image '$BUILDER_RPM_REF' not found locally" >&2
+      return 1
+    }
+  fi
+
   # scp-stackd (M29.4): the Standard Stack controller, built for real — a bundled Node file on the
   # pinned Node base plus the pinned helm. Built from the REPO ROOT (it bundles workspace packages).
   STACKD_REF="${STACKD_REF:-scp-stackd:dev}"
@@ -81,6 +116,8 @@ ensure_runner_source_images() {
     --runner-iac-ref "$RUNNER_IAC_REF"
     --runner-scan-ref "$RUNNER_SCAN_REF"
     --runner-dep-ref "$RUNNER_DEP_REF"
+    --runner-ops-ref "$RUNNER_OPS_REF"
     --stackd-ref "$STACKD_REF"
+    --builder-rpm-ref "$BUILDER_RPM_REF"
   )
 }
