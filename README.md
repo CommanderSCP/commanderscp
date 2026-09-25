@@ -17,13 +17,13 @@ One command, any role, any substrate: `scp install`. It installs CommanderSCP, t
 Events, Gitea — the execution systems CommanderSCP bundles and operates for you), reaches a
 logged-in admin session, and — for a commander — declares the HQ outpost. Nothing else to do first.
 
-| You are installing… | Run |
-|---|---|
-| A **commander**, connected to a Kubernetes cluster | `scp install --role commander --profile eval --kube-context <your-context>` |
-| A **field outpost**, connected to a Kubernetes cluster | `scp install --role outpost --profile eval --kube-context <your-context>` |
-| A **retrans** relay (CDS-boundary; no Standard Stack) | `scp install --role retrans --profile production --kube-context <your-context>` |
-| A VM, no Kubernetes | `scp install --role commander --profile eval --mode compose` |
-| An air-gapped bundle | `scp install --role commander --bundle <extracted-bundle-dir> --registry <your-registry> --pubkey <path-to-pubkey>` |
+| You are installing…                                    | Run                                                                                                                 |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| A **commander**, connected to a Kubernetes cluster     | `scp install --role commander --profile eval --kube-context <your-context>`                                         |
+| A **field outpost**, connected to a Kubernetes cluster | `scp install --role outpost --profile eval --kube-context <your-context>`                                           |
+| A **retrans** relay (CDS-boundary; no Standard Stack)  | `scp install --role retrans --profile production --kube-context <your-context>`                                     |
+| A VM, no Kubernetes                                    | `scp install --role commander --profile eval --mode compose`                                                        |
+| An air-gapped bundle                                   | `scp install --role commander --bundle <extracted-bundle-dir> --registry <your-registry> --pubkey <path-to-pubkey>` |
 
 No cluster yet? Add `--bootstrap-k3s` to install a single-node k3s first (connected installs only —
 see `scp install --help` and [docs/adr/0060-front-door.md](docs/adr/0060-front-door.md) for the
@@ -55,11 +55,11 @@ environments.
 
 ## Learn more
 
-| Document | Role |
-|---|---|
-| [docs/quickstart.md](docs/quickstart.md) | Full install walkthrough, per role and substrate |
-| [PROJECT_CHARTER.md](PROJECT_CHARTER.md) | **Authoritative.** Vision, requirements, principles, MVP scope |
-| [docs/DESIGN.md](docs/DESIGN.md) | Architecture |
-| [docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md) | Toolchain, bootstrap, test strategy, milestones |
-| [docs/GLOSSARY.md](docs/GLOSSARY.md) | **Authoritative for vocabulary** |
-| [docs/adr/](docs/adr/) | Architecture decision records |
+| Document                                         | Role                                                           |
+| ------------------------------------------------ | -------------------------------------------------------------- |
+| [docs/quickstart.md](docs/quickstart.md)         | Full install walkthrough, per role and substrate               |
+| [PROJECT_CHARTER.md](PROJECT_CHARTER.md)         | **Authoritative.** Vision, requirements, principles, MVP scope |
+| [docs/DESIGN.md](docs/DESIGN.md)                 | Architecture                                                   |
+| [docs/BUILD_AND_TEST.md](docs/BUILD_AND_TEST.md) | Toolchain, bootstrap, test strategy, milestones                |
+| [docs/GLOSSARY.md](docs/GLOSSARY.md)             | **Authoritative for vocabulary**                               |
+| [docs/adr/](docs/adr/)                           | Architecture decision records                                  |
