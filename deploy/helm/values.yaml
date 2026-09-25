@@ -416,6 +416,14 @@ stackd:
     # Empty = the scpd image's tag: the stack's versions ARE the SCP release's (E4).
     tag: ""
     pullPolicy: IfNotPresent
+  # THE CONTROLLER'S OWN NAMESPACE (review B1, ADR-0058). Created by this chart; holds the
+  # controller's pod, its credential and its state, and nothing else. It may not be the release
+  # namespace, the runner namespace or a backend namespace — the render fails if it is — because
+  # anything able to create a pod in a ServiceAccount's namespace can run a pod as it.
+  namespace: scp-stackd
+  # Pull secrets for the controller's image. They must exist IN `namespace` above (pull secrets
+  # are namespaced). Empty: `.Values.imagePullSecrets`' names, which must then exist there too.
+  imagePullSecrets: []
   # The namespaces the bundled backends install into — deploy/helm-bundled's defaults, which the
   # controller reads from the chart in its image. tools/helm-verify fails if the two lists differ.
   # This chart CREATES them (so the controller never needs cluster-wide namespace or Secret rights)
@@ -458,6 +466,15 @@ oidc:
 bootstrap:
   orgName: default
   adminUsername: admin
+
+# THE INSTANCE-OPERATOR ROLE (owner decision 2026-09-25, ADR-0058 §7): the authority to change the
+# Standard Stack for every org, held by a USER and checked against their normal login. The first
+# grant needs an operator credential (`scp instance-operator grant --operator-token …`) — or this:
+instanceOperator:
+  # true: the api grants the role to `bootstrap.adminUsername` of `bootstrap.orgName`, once, while
+  # no live grant exists, audited as `install`. The M29.1 installer sets it. Needs the operator
+  # database connection (stackd.enabled or operatorApi.enabled).
+  grantBootstrapAdmin: false
 
 seedDemo: false
 

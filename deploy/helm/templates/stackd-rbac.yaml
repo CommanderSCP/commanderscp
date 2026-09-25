@@ -1,5 +1,6 @@
 {{- if .Values.stackd.enabled }}
 {{- $name := printf "%s-stackd" (include "commanderscp.fullname" .) }}
+{{- $sns := include "commanderscp.stackdNamespace" . }}
 {{/*
 THE STACK CONTROLLER'S IDENTITY AND ITS RIGHTS (M29.4, ADR-0058 E1). Stated plainly, because it is
 the point of this file: installing upstream Argo means creating CustomResourceDefinitions,
@@ -7,8 +8,14 @@ ClusterRoles and ClusterRoleBindings, and creating a role that grants what you d
 hold requires `escalate`, binding one requires `bind`. That is near cluster-admin, and no scoping
 makes it less so — so the mitigation is SEPARATION:
 
-  - this ServiceAccount is bound by exactly the two bindings below and used by exactly one pod,
-    the stackd Deployment; no scpd workload runs as it or mounts its token or credential
+  - it lives in ITS OWN NAMESPACE (`stackd.namespace`, created here), with its pod, its
+    credential and its state — review B1: in the release namespace, any identity that can create a
+    pod there (the runner Role's `jobs create`) could run a pod AS this ServiceAccount and hold its
+    rights. Nothing else this chart renders has any right in that namespace, and the render FAILS
+    if something would (`commanderscp.assertStackdNamespaceIsolated`); tools/helm-verify proves it
+    across a value matrix, and the kind suite proves a runner-SA takeover Job is refused;
+  - this ServiceAccount is bound by exactly the bindings below and used by exactly one pod, the
+    stackd Deployment; no scpd workload runs as it or mounts its token or credential
     (tools/helm-verify asserts all three);
   - its NAMESPACED rights (Secrets, workloads, Roles) exist only inside the five backend
     namespaces this file creates, each through its own RoleBinding to a ClusterRole that is bound
@@ -22,12 +29,24 @@ fails if any rendered kind is not granted here (sufficiency), and the kind harne
 controller with exactly this ServiceAccount (the grants are not trusted, they are exercised).
 */}}
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $sns }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+  annotations:
+    # A hook, so it exists before the credential Secret (weight -10) that lives in it.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": hook-failed
+---
+apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ $name }}
   # Explicit, because the bindings below name it by namespace and a `helm template | kubectl apply`
   # (the kind harness) would otherwise create it wherever kubectl points.
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ $sns }}
   labels:
     {{- include "commanderscp.stackdLabels" . | nindent 4 }}
 automountServiceAccountToken: false
@@ -72,7 +91,37 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ $name }}
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ $sns }}
+---
+{{/* ITS OWN STATE (apps/stackd/src/state.ts): the inventory and the last good set, as Secrets in
+its own namespace — the one place no backend and no scpd identity can write. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-state
+  namespace: {{ $sns }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-state
+  namespace: {{ $sns }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-state
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $sns }}
 ---
 {{/* Bound ONLY by the per-namespace RoleBindings below — never cluster-wide. */}}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -130,6 +179,6 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ $name }}
-    namespace: {{ $.Release.Namespace }}
+    namespace: {{ $sns }}
 {{- end }}
 {{- end }}

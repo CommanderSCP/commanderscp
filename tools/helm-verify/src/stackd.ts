@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
+  assertStackSet,
   deriveBackendValues,
   fingerprint,
   loadRelease,
@@ -25,7 +26,13 @@ import { StackBackendSchema, type StackBackend } from "@scp/schemas";
  *                 for the cluster half; one RoleBinding per backend namespace for the namespaced
  *                 half, which is bound nowhere cluster-wide), exactly one pod runs as it, no scpd
  *                 pod gains any grant it did not have without it, and its credential is mounted
- *                 only into the controller and the migrations Job.
+ *                 only into the controller (the migrations Job gets its id and sha256).
+ *   ITS OWN NAMESPACE (review B1) - across a VALUE MATRIX (launcher, runner namespace, per-run
+ *                 secrets, every managed class, the bundled backends), no identity but the
+ *                 controller holds, through any Role, ClusterRole or binding the chart renders, a
+ *                 right that could run a pod as the controller or read its credential in the
+ *                 controller's namespace; and the chart REFUSES to render the controller into the
+ *                 release, runner or a backend namespace.
  *   SUFFICIENCY - every kind every backend renders (through the controller's OWN values
  *                 derivation) is granted, with the verbs server-side apply and prune need, in the
  *                 namespaces the chart creates — so a vendored-manifest bump that adds a kind is a
@@ -129,6 +136,10 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
   const ns = "verify-scp";
   const full = `${release}-commanderscp`;
   const sa = `${full}-stackd`;
+  const chartDefaults = parseYaml(readFileSync(path.join(ctx.chartDir, "values.yaml"), "utf8")) as {
+    stackd: { namespace: string };
+  };
+  const sns = chartDefaults.stackd.namespace;
   const clusterRole = `${full}-stackd-cluster`;
   const namespacedRole = `${full}-stackd-namespaced`;
 
@@ -149,15 +160,20 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     stackd: { backendNamespaces: string[] };
   };
   const backendNamespaces = chartValues.stackd.backendNamespaces;
+  const stateRole = `${sa}-state`;
   const expectedAdded = new Set([
-    `ServiceAccount/${ns}/${sa}`,
+    `Namespace//${sns}`,
+    `ServiceAccount/${sns}/${sa}`,
     `ClusterRole//${clusterRole}`,
     `ClusterRole//${namespacedRole}`,
     `ClusterRoleBinding//${clusterRole}`,
-    `Secret//${sa}`,
-    `ConfigMap//${sa}-images`,
-    `Deployment//${sa}`,
-    `NetworkPolicy//${sa}`,
+    `Role/${sns}/${stateRole}`,
+    `RoleBinding/${sns}/${stateRole}`,
+    `Secret/${sns}/${sa}`,
+    `Secret//${sa}-install`,
+    `ConfigMap/${sns}/${sa}-images`,
+    `Deployment/${sns}/${sa}`,
+    `NetworkPolicy/${sns}/${sa}`,
     ...backendNamespaces.flatMap((n) => [`Namespace//${n}`, `RoleBinding/${n}/${sa}`])
   ]);
   const addedKeys = added.map(docKey).sort();
@@ -175,14 +191,15 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
       name?: string;
       namespace?: string;
     }[];
-    const refersToStackd = roleRef.name === clusterRole || roleRef.name === namespacedRole;
+    const refersToStackd =
+      roleRef.name === clusterRole || roleRef.name === namespacedRole || roleRef.name === stateRole;
     const bindsStackdSa = subjects.some((s) => s.kind === "ServiceAccount" && s.name === sa);
     if (refersToStackd || bindsStackdSa) {
       const onlyStackd =
         subjects.length === 1 &&
         subjects[0]!.kind === "ServiceAccount" &&
         subjects[0]!.name === sa &&
-        subjects[0]!.namespace === ns;
+        subjects[0]!.namespace === sns;
       if (!onlyStackd || !refersToStackd) {
         fail(
           `[stackd] ${b.kind} '${b.metadata?.name}' mixes the stack controller's grant with another identity or role (roleRef ${roleRef.name}, subjects ${JSON.stringify(subjects)}) — its rights must be bound to its ServiceAccount ALONE`
@@ -193,9 +210,12 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
           `[stackd] the namespaced ClusterRole is bound cluster-wide by '${b.metadata?.name}' — it must only be bound per backend namespace`
         );
       }
-      if (b.kind === "RoleBinding" && !backendNamespaces.includes(String(b.metadata?.namespace))) {
+      const bindingNs = String(b.metadata?.namespace);
+      const allowedHere =
+        roleRef.name === stateRole ? bindingNs === sns : backendNamespaces.includes(bindingNs);
+      if (b.kind === "RoleBinding" && !allowedHere) {
         fail(
-          `[stackd] RoleBinding '${b.metadata?.name}' grants the controller rights in '${b.metadata?.namespace}', which is not a backend namespace`
+          `[stackd] RoleBinding '${b.metadata?.name}' grants the controller '${roleRef.name}' in '${bindingNs}' — the namespaced role belongs only in the backend namespaces, the state role only in ${sns}`
         );
       }
     }
@@ -212,7 +232,7 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
   }
 
   const podsAsStackd = on.filter((d) => podSpecs(d).some((ps) => ps["serviceAccountName"] === sa));
-  if (podsAsStackd.map(docKey).join() !== `Deployment//${sa}`) {
+  if (podsAsStackd.map(docKey).join() !== `Deployment/${sns}/${sa}`) {
     fail(
       `[stackd] exactly the stackd Deployment may run as ${sa}; found ${JSON.stringify(podsAsStackd.map(docKey))}`
     );
@@ -246,26 +266,103 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
   );
   if (scpdServiceAccounts.has(sa)) fail(`[stackd] an scpd workload runs as ${sa}`);
 
-  // The credential reaches the controller and the migrations Job, and nothing else.
+  // The credential's PLAINTEXT is in one Secret in the controller's namespace and reaches the
+  // controller alone; the migrations Job records its id and sha256 from the release-namespace
+  // Secret, and nothing else receives either.
+  const credSecret = on.find((d) => docKey(d) === `Secret/${sns}/${sa}`);
+  const credKeys = Object.keys((credSecret?.["stringData"] ?? {}) as Record<string, string>);
+  if (credKeys.join() !== "credential") {
+    fail(
+      `[stackd] the controller's credential Secret holds ${JSON.stringify(credKeys)}, not exactly 'credential'`
+    );
+  }
+  const installSecret = on.find((d) => docKey(d) === `Secret//${sa}-install`);
+  const installData = (installSecret?.["stringData"] ?? {}) as Record<string, string>;
+  if (
+    "credential" in installData ||
+    Object.values(installData).some((v) => v.startsWith("scp_op_"))
+  ) {
+    fail(
+      "[stackd] the release-namespace install Secret carries the controller's plaintext credential"
+    );
+  }
+  if (!/^[0-9a-f]{64}$/.test(installData["credentialSha256"] ?? "")) {
+    fail("[stackd] the install Secret has no sha256 of the controller's credential");
+  }
+  const tokenId = installData["credentialTokenId"] ?? "";
+  const plaintext =
+    ((credSecret?.["stringData"] ?? {}) as Record<string, string>)["credential"] ?? "";
+  if (!tokenId || !plaintext.startsWith(`scp_op_${tokenId}.`)) {
+    fail("[stackd] the install Secret's credential id is not the controller credential's id");
+  }
   for (const d of on) {
-    const holds = envNames(d).some((e) => e.secret === sa && e.key === "credential");
-    const allowed =
-      docKey(d) === `Deployment//${sa}` ||
-      (d.kind === "Job" && String(d.metadata?.name).includes("-migrate-"));
-    if (holds && !allowed)
-      fail(`[stackd] ${docKey(d)} mounts the stack controller's operator credential`);
-    if (!holds && allowed)
-      fail(`[stackd] ${docKey(d)} does not receive the stack controller's credential it needs`);
+    const env = envNames(d);
+    const holdsPlain = env.some((e) => e.secret === sa && e.key === "credential");
+    const holdsHash = env.some(
+      (e) =>
+        e.secret === `${sa}-install` &&
+        (e.key === "credentialSha256" || e.key === "credentialTokenId")
+    );
+    const isController = docKey(d) === `Deployment/${sns}/${sa}`;
+    const isMigrate = d.kind === "Job" && String(d.metadata?.name).includes("-migrate-");
+    if (holdsPlain !== isController) {
+      fail(
+        `[stackd] ${docKey(d)} ${holdsPlain ? "mounts" : "does not receive"} the stack controller's plaintext credential`
+      );
+    }
+    if (holdsHash !== isMigrate) {
+      fail(
+        `[stackd] ${docKey(d)} ${holdsHash ? "receives" : "does not receive"} the controller credential's id/sha256`
+      );
+    }
+  }
+  // Review S2: a replaced credential rolls the controller.
+  const stackdDeployment = on.find((d) => docKey(d) === `Deployment/${sns}/${sa}`);
+  const tplAnnotations =
+    (
+      stackdDeployment?.["spec"] as {
+        template?: { metadata?: { annotations?: Record<string, string> } };
+      }
+    )?.template?.metadata?.annotations ?? {};
+  if (!/^[0-9a-f]{64}$/.test(tplAnnotations["checksum/credential"] ?? "")) {
+    fail(
+      "[stackd] the controller's pod template carries no checksum of its credential — a rotation would not roll it"
+    );
+  }
+  // Review N3: DNS, the API server, and scpd's api pods in the RELEASE namespace — nothing else.
+  const np = on.find((d) => docKey(d) === `NetworkPolicy/${sns}/${sa}`);
+  const egress =
+    (np?.["spec"] as { egress?: { to?: Record<string, unknown>[]; ports?: { port?: number }[] }[] })
+      ?.egress ?? [];
+  const kinds = egress.map((r) => {
+    const to = r.to ?? [];
+    if (to.length === 1 && "namespaceSelector" in to[0]! && !("podSelector" in to[0]!)) {
+      return (r.ports ?? []).every((p) => p.port === 53) ? "dns" : "any-namespace";
+    }
+    if (to.length > 0 && to.every((t) => "ipBlock" in t)) return "kube-api";
+    if (
+      to.length === 1 &&
+      JSON.stringify(to[0]!["namespaceSelector"]) ===
+        JSON.stringify({ matchLabels: { "kubernetes.io/metadata.name": ns } }) &&
+      "podSelector" in to[0]!
+    ) {
+      return "scpd-api";
+    }
+    return `other:${JSON.stringify(to)}`;
+  });
+  if (JSON.stringify(kinds) !== JSON.stringify(["dns", "kube-api", "scpd-api"])) {
+    fail(
+      `[stackd] the controller's egress is ${JSON.stringify(kinds)}, not exactly DNS, the API server and scpd's api pods in ${ns}`
+    );
   }
   for (const d of on.filter(
     (x) => x.kind === "Deployment" && /-(api|worker)$/.test(String(x.metadata?.name))
   )) {
-    const env = envNames(d);
     if (
-      !env.some(
+      !envNames(d).some(
         (e) =>
           e.name === "SCP_OPERATOR_DATABASE_PASSWORD" &&
-          e.secret === sa &&
+          e.secret === `${sa}-install` &&
           e.key === "operatorDatabasePassword"
       )
     ) {
@@ -318,6 +415,9 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     );
   }
 
+  // ---- ITS OWN NAMESPACE, ACROSS THE VALUE MATRIX (review B1) ---------------------------------
+  notes.push(...verifyStackdNamespaceIsolation(ctx, { release, ns, sa, sns, backendNamespaces }));
+
   // ---- SUFFICIENCY -----------------------------------------------------------------------------
   const clusterRules = (on.find((d) => docKey(d) === `ClusterRole//${clusterRole}`)?.["rules"] ??
     []) as Rule[];
@@ -360,7 +460,7 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     g = gitea
   ): Promise<KubeObject[]> => {
     const values = deriveBackendValues(
-      { backend, enabled: true, sizeTier: "medium" },
+      { backend, enabled: true, sizeTier: "medium", purgeGeneration: 0 },
       { release: rel, scpNamespace: ns, federationRole: "commander", gitea: g }
     );
     return stamp(parseManifests(await helm.template(rel.chartDir, values)), backend, rel.version);
@@ -371,6 +471,14 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
       const objs = await render(rel, backend);
       if (objs.length === 0)
         fail(`[stackd] ${backend} rendered nothing through the controller's values`);
+      // The controller refuses to apply what STACK_KINDS does not allow (review S1): a vendored
+      // bump that adds a kind must fail here, not at the first reconcile.
+      try {
+        const nsOf = objs.find((o) => o.kind === "Namespace")?.metadata.name ?? "";
+        assertStackSet(objs, nsOf, `${backend}'s render`);
+      } catch (err) {
+        fail(`[stackd] ${err instanceof Error ? err.message : String(err)}`);
+      }
       for (const o of objs) {
         checked += 1;
         const mapped = RESOURCE_OF[o.kind];
@@ -416,7 +524,14 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
       }
     }
   }
-  // The state store and the readiness evidence.
+  // The state store lives in the controller's own namespace (review S1).
+  const stateRules = (on.find((d) => docKey(d) === `Role/${sns}/${stateRole}`)?.["rules"] ??
+    []) as Rule[];
+  for (const verb of ["get", "create", "patch", "delete"]) {
+    if (!grants(stateRules, "", "secrets", verb))
+      fail(`[stackd] the controller cannot ${verb} its state Secrets in ${sns}`);
+  }
+  // Backend Secrets (Gitea's) and the readiness evidence.
   for (const [resource, verbs] of [
     ["secrets", ["get", "create", "patch", "delete"]],
     ["pods", ["get", "list"]]
@@ -495,4 +610,259 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     `  stack controller: ${added.length} objects of its own and nothing else; bound only to ${sa}; ${checked} rendered objects across all five backends (two image sets) all granted, in backend namespaces only; renders deterministic, Gitea secrets carried`
   );
   return notes;
+}
+
+// ---- review B1: nothing else can become the controller ------------------------------------------
+
+/** Rights in the controller's namespace that let their holder run a pod AS the controller (and so
+ *  hold its rights), mint its token, or read its credential. `[group, resource, verbs]`. */
+const TAKEOVER_RIGHTS: [string, string, string[]][] = [
+  ["", "pods", ["create", "update", "patch"]],
+  ["", "pods/exec", ["create", "get"]],
+  ["", "pods/attach", ["create", "get"]],
+  ["", "pods/ephemeralcontainers", ["update", "patch"]],
+  ["", "replicationcontrollers", ["create", "update", "patch"]],
+  ["apps", "deployments", ["create", "update", "patch"]],
+  ["apps", "statefulsets", ["create", "update", "patch"]],
+  ["apps", "daemonsets", ["create", "update", "patch"]],
+  ["apps", "replicasets", ["create", "update", "patch"]],
+  ["batch", "jobs", ["create", "update", "patch"]],
+  ["batch", "cronjobs", ["create", "update", "patch"]],
+  ["", "secrets", ["get", "list", "watch"]],
+  ["", "serviceaccounts/token", ["create"]],
+  ["", "serviceaccounts", ["impersonate"]],
+  ["rbac.authorization.k8s.io", "roles", ["create", "update", "patch", "bind", "escalate"]],
+  ["rbac.authorization.k8s.io", "rolebindings", ["create", "update", "patch"]]
+];
+
+const matches = (list: string[] | undefined, want: string) =>
+  (list ?? []).includes(want) || (list ?? []).includes("*");
+
+/**
+ * Every (subject, right) in `docs` that reaches namespace `target` and is a takeover right —
+ * through a RoleBinding IN `target`, or any ClusterRoleBinding. A roleRef the render does not
+ * contain (a built-in like `admin`) is treated as granting everything: it cannot be read, so it
+ * cannot be cleared.
+ */
+export function takeoverGrants(
+  docs: K8sDoc[],
+  target: string,
+  exempt: (s: Subject) => boolean
+): string[] {
+  const out: string[] = [];
+  const rolesByKey = new Map(
+    docs
+      .filter((d) => d.kind === "Role" || d.kind === "ClusterRole")
+      .map((d) => [
+        `${d.kind}/${d.kind === "Role" ? (d.metadata?.namespace ?? "") : ""}/${d.metadata?.name}`,
+        d
+      ])
+  );
+  for (const b of docs) {
+    if (b.kind !== "RoleBinding" && b.kind !== "ClusterRoleBinding") continue;
+    if (b.kind === "RoleBinding" && b.metadata?.namespace !== target) continue;
+    const roleRef = (b["roleRef"] ?? {}) as { kind?: string; name?: string };
+    const role = rolesByKey.get(
+      `${roleRef.kind}/${roleRef.kind === "Role" ? (b.metadata?.namespace ?? "") : ""}/${roleRef.name}`
+    );
+    const rules: Rule[] = role
+      ? ((role["rules"] ?? []) as Rule[])
+      : [{ apiGroups: ["*"], resources: ["*"], verbs: ["*"] }];
+    for (const subject of (b["subjects"] ?? []) as Subject[]) {
+      if (exempt(subject)) continue;
+      for (const [group, resource, verbs] of TAKEOVER_RIGHTS) {
+        for (const verb of verbs) {
+          if (
+            rules.some(
+              (r) =>
+                matches(r.apiGroups, group) &&
+                matches(r.resources, resource) &&
+                matches(r.verbs, verb)
+            )
+          ) {
+            out.push(
+              `${subject.kind} ${subject.namespace ? `${subject.namespace}/` : ""}${subject.name} may ${verb} ${group || "core"}/${resource} in ${target} (via ${b.kind} ${b.metadata?.name} -> ${roleRef.kind} ${roleRef.name})`
+            );
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+interface Subject {
+  kind?: string;
+  name?: string;
+  namespace?: string;
+}
+
+function verifyStackdNamespaceIsolation(
+  ctx: StackdVerifyContext,
+  p: { release: string; ns: string; sa: string; sns: string; backendNamespaces: string[] }
+): string[] {
+  const { fail } = ctx;
+  const isController = (s: Subject) =>
+    s.kind === "ServiceAccount" && s.name === p.sa && s.namespace === p.sns;
+
+  // Known-positive control: the detector sees the exact grant the review found.
+  const planted: K8sDoc[] = [
+    {
+      kind: "Role",
+      metadata: { name: "runner", namespace: p.sns },
+      rules: [{ apiGroups: ["batch"], resources: ["jobs"], verbs: ["create"] }]
+    },
+    {
+      kind: "RoleBinding",
+      metadata: { name: "runner", namespace: p.sns },
+      roleRef: { kind: "Role", name: "runner" },
+      subjects: [{ kind: "ServiceAccount", name: "worker", namespace: p.ns }]
+    },
+    {
+      kind: "ClusterRoleBinding",
+      metadata: { name: "builtin" },
+      roleRef: { kind: "ClusterRole", name: "edit" },
+      subjects: [{ kind: "ServiceAccount", name: "worker", namespace: p.ns }]
+    }
+  ];
+  const control = takeoverGrants(planted, p.sns, isController);
+  if (
+    !control.some((c) => c.includes("batch/jobs")) ||
+    !control.some((c) => c.includes("ClusterRole edit"))
+  ) {
+    fail(
+      `[stackd] the takeover detector does not see a planted jobs-create grant or an unreadable built-in ClusterRole (${JSON.stringify(control)}) — the matrix below would pass by not looking`
+    );
+  }
+
+  const common = [
+    "--namespace",
+    p.ns,
+    "--set",
+    "stackd.enabled=true",
+    "--set",
+    "networkPolicy.enabled=true",
+    "--set",
+    "bundledExecutor.argocd.enabled=true",
+    "--set",
+    "bundledExecutor.gitea.enabled=true",
+    "--set",
+    "managedIac.enabled=true",
+    "--set",
+    "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+    "--set",
+    "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0",
+    "--set",
+    "managedScan.runnerImage=ghcr.io/commanderscp/scp-runner-scan:0.1.0",
+    "--set",
+    "managedOps.runnerImage=ghcr.io/commanderscp/scp-runner-ops:0.1.0"
+  ];
+  let points = 0;
+  let grantsSeen = 0;
+  const cells: { label: string; args: string[] }[] = [
+    { label: "docker", args: ["--set", "managedRunners.launcher=docker"] }
+  ];
+  for (const runnerNs of ["", "scp-runners"]) {
+    for (const perRunSecrets of [true, false]) {
+      cells.push({
+        label: `kubernetes ns='${runnerNs}' perRunSecrets=${perRunSecrets}`,
+        args: [
+          "--set",
+          "managedRunners.launcher=kubernetes",
+          "--set",
+          "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+          "--set",
+          `managedRunners.kubernetes.namespace=${runnerNs}`,
+          "--set",
+          `managedRunners.kubernetes.perRunSecrets=${perRunSecrets}`,
+          "--set",
+          `managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=${runnerNs === ""}`
+        ]
+      });
+    }
+  }
+  for (const cell of cells) {
+    let docs: K8sDoc[];
+    try {
+      docs = ctx.renderChart(p.release, [...common, ...cell.args]);
+    } catch (err) {
+      fail(
+        `[stackd] matrix cell '${cell.label}' did not render: ${err instanceof Error ? err.message.slice(0, 300) : String(err)}`
+      );
+      continue;
+    }
+    points += 1;
+    // The matrix is only evidence if the cell has grants to find: the runner Role on Kubernetes.
+    grantsSeen += docs.filter(
+      (d) => d.kind === "RoleBinding" || d.kind === "ClusterRoleBinding"
+    ).length;
+    // Where the controller ACTUALLY runs in this render — read from its Deployment, not from the
+    // value that should have put it there (a namespace-less object lands in the release's).
+    const deployment = docs.find((d) => d.kind === "Deployment" && d.metadata?.name === p.sa);
+    const where = deployment?.metadata?.namespace ?? p.ns;
+    const controllerHere = (s: Subject) =>
+      s.kind === "ServiceAccount" && s.name === p.sa && s.namespace === where;
+    const bad = takeoverGrants(
+      docs.map((d) =>
+        // A namespaced binding without a namespace is created in the release namespace.
+        d.kind === "RoleBinding" && !d.metadata?.namespace
+          ? { ...d, metadata: { ...d.metadata, namespace: p.ns } }
+          : d
+      ),
+      where,
+      controllerHere
+    );
+    for (const b of bad) fail(`[stackd] ${cell.label}: ${b}`);
+    // And the controller's own objects are where they belong, whatever the cell.
+    for (const d of docs) {
+      const name = String(d.metadata?.name ?? "");
+      if (
+        name === p.sa &&
+        d.kind !== "ClusterRoleBinding" &&
+        d.kind !== "RoleBinding" &&
+        d.metadata?.namespace !== p.sns
+      ) {
+        fail(`[stackd] ${cell.label}: ${d.kind} ${name} is rendered outside ${p.sns}`);
+      }
+    }
+  }
+  if (points !== cells.length || grantsSeen === 0) {
+    fail(
+      `[stackd] the namespace-isolation matrix rendered ${points}/${cells.length} cells with ${grantsSeen} bindings — it is not looking`
+    );
+  }
+
+  // The chart refuses to put the controller where something else has rights.
+  const refusals: { label: string; args: string[] }[] = [
+    { label: "the release namespace", args: ["--set", `stackd.namespace=${p.ns}`] },
+    {
+      label: "the runner namespace",
+      args: [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        `managedRunners.kubernetes.namespace=${p.sns}`
+      ]
+    },
+    { label: "a backend namespace", args: ["--set", `stackd.namespace=${p.backendNamespaces[0]}`] }
+  ];
+  for (const r of refusals) {
+    let rendered = false;
+    try {
+      ctx.renderChart(p.release, [...common, ...r.args]);
+      rendered = true;
+    } catch (err) {
+      if (!String(err instanceof Error ? err.message : err).includes("stackd.namespace")) {
+        fail(
+          `[stackd] putting the controller in ${r.label} failed to render for another reason: ${String(err).slice(0, 300)}`
+        );
+      }
+    }
+    if (rendered) fail(`[stackd] the chart renders the stack controller into ${r.label}`);
+  }
+  return [
+    `  stack controller namespace: ${points} value-matrix cells (${grantsSeen} bindings) grant nothing in ${p.sns} to anyone but the controller; ${refusals.length} placements refused`
+  ];
 }

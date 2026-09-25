@@ -83,6 +83,30 @@ the operator has not supplied their own `scp_operator` connection (`operatorApi.
 The migrations Job provisions the login from it (`SCP_PROVISION_OPERATOR_ROLE=1`), which is the
 drizzle/0076 follow-up: no `ALTER ROLE` typed by hand.
 */}}
+{{- define "commanderscp.stackdNamespace" -}}
+{{- required "stackd.namespace is required: the stack controller runs in a namespace of its own" .Values.stackd.namespace -}}
+{{- end -}}
+
+{{/*
+THE CONTROLLER'S NAMESPACE HOLDS NOTHING ELSE (review B1). Anything that can create a pod in the
+namespace a ServiceAccount lives in can run a pod AS it; the stack controller's ServiceAccount holds
+near-cluster-admin rights, so its namespace may not be one where anything else this chart renders
+has rights: not the release namespace (the api/worker pods, the runner Role when runners share it),
+not the runner namespace, not a backend namespace.
+*/}}
+{{- define "commanderscp.assertStackdNamespaceIsolated" -}}
+{{- $sns := include "commanderscp.stackdNamespace" . -}}
+{{- if eq $sns .Release.Namespace -}}
+{{- fail (printf "stackd.namespace '%s' is the release namespace: the stack controller must run in a namespace of its own (anything that can create a pod there could run as it) — ADR-0058" $sns) -}}
+{{- end -}}
+{{- if eq $sns (.Values.managedRunners.kubernetes.namespace | default .Release.Namespace) -}}
+{{- fail (printf "stackd.namespace '%s' is the runner namespace: the runner Role creates Jobs there, and a Job could run as the stack controller — ADR-0058" $sns) -}}
+{{- end -}}
+{{- if has $sns .Values.stackd.backendNamespaces -}}
+{{- fail (printf "stackd.namespace '%s' is a backend namespace: the backends' own identities hold rights there — ADR-0058" $sns) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "commanderscp.generatesOperatorDbPassword" -}}
 {{- and .Values.stackd.enabled (not .Values.operatorApi.databaseUrlSecret) -}}
 {{- end -}}
@@ -254,6 +278,12 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ .Values.bootstrap.orgName | quote }}
 - name: SCP_BOOTSTRAP_ADMIN_USERNAME
   value: {{ .Values.bootstrap.adminUsername | quote }}
+{{- if .Values.instanceOperator.grantBootstrapAdmin }}
+{{- /* M29.1's seam (ADR-0058 §7): the bootstrap admin gets the instance-operator role, once,
+       while no live grant exists — so the first login can run the Stack page. */}}
+- name: SCP_BOOTSTRAP_INSTANCE_OPERATOR
+  value: "1"
+{{- end }}
 - name: SCP_SEED_DEMO
   value: {{ .Values.seedDemo | quote }}
 - name: SCP_FEDERATION_ROLE
@@ -362,7 +392,7 @@ since those three differ between the migrations Job and the api/worker Deploymen
 - name: SCP_OPERATOR_DATABASE_PASSWORD
   valueFrom:
     secretKeyRef:
-      name: {{ include "commanderscp.fullname" . }}-stackd
+      name: {{ include "commanderscp.fullname" . }}-stackd-install
       key: operatorDatabasePassword
 {{- end }}
 {{- end }}
