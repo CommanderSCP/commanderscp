@@ -19107,6 +19107,14 @@ export type GetStackResponses = {
             } | null;
         }>;
         servesThisOrg: boolean | null;
+        authoring: {
+            configured: boolean;
+            project: string;
+            namespace: string;
+            carrierRevision: string | null;
+            clusters: Array<string>;
+            configuredAt: string | null;
+        };
     };
 };
 
@@ -19215,6 +19223,14 @@ export type PutStackBackendResponses = {
             } | null;
         }>;
         servesThisOrg: boolean | null;
+        authoring: {
+            configured: boolean;
+            project: string;
+            namespace: string;
+            carrierRevision: string | null;
+            clusters: Array<string>;
+            configuredAt: string | null;
+        };
     };
 };
 
@@ -19320,6 +19336,14 @@ export type PurgeStackBackendResponses = {
             } | null;
         }>;
         servesThisOrg: boolean | null;
+        authoring: {
+            configured: boolean;
+            project: string;
+            namespace: string;
+            carrierRevision: string | null;
+            clusters: Array<string>;
+            configuredAt: string | null;
+        };
     };
 };
 
@@ -19425,6 +19449,14 @@ export type PutStackSettingsResponses = {
             } | null;
         }>;
         servesThisOrg: boolean | null;
+        authoring: {
+            configured: boolean;
+            project: string;
+            namespace: string;
+            carrierRevision: string | null;
+            clusters: Array<string>;
+            configuredAt: string | null;
+        };
     };
 };
 
@@ -19528,6 +19560,14 @@ export type RequestStackUpgradeResponses = {
             } | null;
         }>;
         servesThisOrg: boolean | null;
+        authoring: {
+            configured: boolean;
+            project: string;
+            namespace: string;
+            carrierRevision: string | null;
+            clusters: Array<string>;
+            configuredAt: string | null;
+        };
     };
 };
 
@@ -19611,6 +19651,14 @@ export type GetStackDiagnosticsResponses = {
                 } | null;
             }>;
             servesThisOrg: boolean | null;
+            authoring: {
+                configured: boolean;
+                project: string;
+                namespace: string;
+                carrierRevision: string | null;
+                clusters: Array<string>;
+                configuredAt: string | null;
+            };
         };
         backends: Array<{
             backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
@@ -19681,6 +19729,9 @@ export type GetStackSpecResponses = {
             factsSha256: string | null;
             rotationGeneration: number | null;
         }>;
+        authoring?: {
+            factsSha256: string | null;
+        };
     };
 };
 
@@ -19844,6 +19895,96 @@ export type PutStackWiringResponses = {
 
 export type PutStackWiringResponse = PutStackWiringResponses[keyof PutStackWiringResponses];
 
+export type DeleteStackAuthoringData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/stack/authoring';
+};
+
+export type DeleteStackAuthoringErrors = {
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteStackAuthoringError = DeleteStackAuthoringErrors[keyof DeleteStackAuthoringErrors];
+
+export type DeleteStackAuthoringResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type DeleteStackAuthoringResponse = DeleteStackAuthoringResponses[keyof DeleteStackAuthoringResponses];
+
+export type PutStackAuthoringData = {
+    body: {
+        carrierRevision: string;
+        clusters: Array<string>;
+        factsSha256: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/stack/authoring';
+};
+
+export type PutStackAuthoringErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutStackAuthoringError = PutStackAuthoringErrors[keyof PutStackAuthoringErrors];
+
+export type PutStackAuthoringResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type PutStackAuthoringResponse = PutStackAuthoringResponses[keyof PutStackAuthoringResponses];
+
 export type RotateStackBackendData = {
     body?: never;
     path: {
@@ -19944,6 +20085,14 @@ export type RotateStackBackendResponses = {
             } | null;
         }>;
         servesThisOrg: boolean | null;
+        authoring: {
+            configured: boolean;
+            project: string;
+            namespace: string;
+            carrierRevision: string | null;
+            clusters: Array<string>;
+            configuredAt: string | null;
+        };
     };
 };
 

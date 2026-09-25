@@ -3,12 +3,14 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { StackBackendSchema, StackSizeTierSchema, type StackBackend } from "@scp/schemas";
 import {
+  getPath,
   loadRelease,
   parseImageOverrides,
   RETARGETABLE_IMAGE_PATHS,
   type StackRelease
 } from "./release.js";
 import { backendNeeds, deriveBackendValues, scaleQuantity, type ValuesContext } from "./values.js";
+import { stackWideOf } from "./reconcile.js";
 
 /**
  * THE VALUES THE CONTROLLER RENDERS WITH, against the REAL deploy/helm-bundled values.yaml.
@@ -204,6 +206,38 @@ describe("deriveBackendValues", () => {
     const some = backendNeeds(spec, deriveBackendValues(spec, ctx(withRpm)), ctx(withRpm));
     expect(some.map((n) => n.code)).toEqual(["infra-state-backend"]);
     expect(backendNeeds({ ...spec, backend: "gitea" }, {}, ctx(r))).toEqual([]);
+  });
+});
+
+describe("M29.3: the SCP account's grant on the authoring project", () => {
+  const spec = (backend: StackBackend) => ({
+    backend,
+    enabled: true,
+    sizeTier: "small" as const,
+    purgeGeneration: 0,
+    rotateGeneration: 0
+  });
+  it("rides Argo CD's render exactly while authoring is wanted — the release's project, grant only", async () => {
+    const r = await release();
+    const on = deriveBackendValues(spec("argocd"), { ...ctx(r), authoring: true });
+    expect(getPath(on, "bundledExecutor.argocd.authoring")).toEqual({
+      project: "scp-authored",
+      grantOnly: true
+    });
+    const off = deriveBackendValues(spec("argocd"), { ...ctx(r), authoring: false });
+    expect(getPath(off, "bundledExecutor.argocd.authoring")).toBeUndefined();
+    // No other backend's render changes.
+    const gitea = deriveBackendValues(spec("gitea"), { ...ctx(r), authoring: true });
+    expect(getPath(gitea, "bundledExecutor.argocd")).toBeUndefined();
+  });
+  it("is wanted exactly while Argo CD, Gitea and Argo Rollouts are all enabled", () => {
+    const all = StackBackendSchema.options.map((b) => ({ ...spec(b), enabled: false }));
+    const on = (...bs: StackBackend[]) =>
+      stackWideOf(all.map((s) => ({ ...s, enabled: bs.includes(s.backend) }))).authoring;
+    expect(on("argocd", "gitea", "argo-rollouts")).toBe(true);
+    expect(on("argocd", "gitea")).toBe(false);
+    expect(on("argocd", "argo-rollouts")).toBe(false);
+    expect(on("gitea", "argo-rollouts")).toBe(false);
   });
 });
 

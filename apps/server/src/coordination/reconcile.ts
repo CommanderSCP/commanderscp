@@ -1865,6 +1865,9 @@ async function triggerWaveTarget(
           changeObjectId: change.objectId,
           sourceRef: change.sourceRef,
           pluginModule: executorModule,
+          // M29.3 (ADR-0062): a deploy that asked for a rollout this lane cannot author is refused.
+          executorType: type,
+          isRollback,
           binding: binding
             ? {
                 externalRef: binding.externalRef,

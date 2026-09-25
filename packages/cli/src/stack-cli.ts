@@ -87,6 +87,19 @@ export function stackControllerLine(view: StackView): string {
   );
 }
 
+/** M29.3 (ADR-0062): whether a component asking for a canary is authored or refused right now. */
+export function stackAuthoringLine(view: StackView): string {
+  const a = view.authoring;
+  if (!a.configured) {
+    return "canary authoring: OFF — a component asking for a canary is refused (enable argo-rollouts, argocd and gitea)";
+  }
+  const clusters = a.clusters.length > 0 ? `in-cluster, ${a.clusters.join(", ")}` : "in-cluster";
+  return (
+    `canary authoring: on — project ${a.project}, namespace ${a.namespace}, carrier ` +
+    `${a.carrierRevision?.slice(0, 12) ?? "?"}, clusters ${clusters}`
+  );
+}
+
 function printStack(view: StackView, output: OutputFormat): void {
   if (output === "json") {
     console.log(JSON.stringify(view, null, 2));
@@ -100,6 +113,7 @@ function printStack(view: StackView, output: OutputFormat): void {
         : "this organization is NOT served by the Standard Stack (an instance operator can: `scp stack attach`)"
     );
   }
+  console.log(stackAuthoringLine(view));
   console.log("");
   printResult(view.backends, output, (item) => stackBackendRow(item as StackBackendView));
   for (const b of view.backends) {

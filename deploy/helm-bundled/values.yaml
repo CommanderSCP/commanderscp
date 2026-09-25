@@ -79,8 +79,12 @@ bundledExecutor:
     # run through resource actions) nor `update/*` / `delete`: ADR-0008 §3, enforced at the
     # credential. `default`, `kube-*`, and every bundled/SCP control namespace are refused at render.
     # Mirror the same three facts on the Argo CD execution-system's `properties.authoring`.
+    # M29.3 (ADR-0062): the STACK CONTROLLER sets `project: scp-authored, grantOnly: true` whenever
+    # Argo Rollouts, Argo CD and Gitea are all enabled — the grant is rendered here, the project is
+    # the controller's (it names every cluster registered with Argo CD). Nothing to set by hand.
     authoring:
       project: ""
+      grantOnly: false
       carrierRepoURL: ""
       namespaces: []
     # Per-CONTAINER resource requests/limits. Modest defaults sized for a coordination-tier install.

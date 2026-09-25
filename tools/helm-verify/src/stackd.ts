@@ -170,9 +170,43 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
   const offKeys = new Set(off.map(docKey));
   const added = on.filter((d) => !offKeys.has(docKey(d)));
   const chartValues = parseYaml(readFileSync(path.join(ctx.chartDir, "values.yaml"), "utf8")) as {
-    stackd: { backendNamespaces: string[] };
+    stackd: {
+      backendNamespaces: string[];
+      authoring: { argocdNamespace: string; namespace: string };
+    };
   };
   const backendNamespaces = chartValues.stackd.backendNamespaces;
+  /** M29.3 (ADR-0062): canary authoring — argoproj.io applications/appprojects in Argo CD's
+   *  namespace, and the one namespace authored deployments land in. */
+  const authoringRole = `${sa}-authoring`;
+  const authoringArgoNs = chartValues.stackd.authoring.argocdNamespace;
+  const authoringNs = chartValues.stackd.authoring.namespace;
+  if (!backendNamespaces.includes(authoringArgoNs)) {
+    fail(
+      `[stackd] stackd.authoring.argocdNamespace '${authoringArgoNs}' is not a backend namespace`
+    );
+  }
+  if (backendNamespaces.includes(authoringNs) || authoringNs === sns || authoringNs === ns) {
+    fail(
+      `[stackd] stackd.authoring.namespace '${authoringNs}' is a control namespace — authored workloads never land beside a backend, SCP or the controller`
+    );
+  }
+  const authoringRoleDoc = on.find((d) => d.kind === "Role" && d.metadata?.name === authoringRole);
+  const authoringRules = JSON.stringify(((authoringRoleDoc?.["rules"] ?? []) as unknown[]) ?? []);
+  if (
+    authoringRules !==
+    JSON.stringify([
+      {
+        apiGroups: ["argoproj.io"],
+        resources: ["applications", "appprojects"],
+        verbs: ["get", "list", "create", "patch", "delete"]
+      }
+    ])
+  ) {
+    fail(
+      `[stackd] the authoring Role must grant exactly argoproj.io applications/appprojects get/list/create/patch/delete, got ${authoringRules}`
+    );
+  }
   const stateRole = `${sa}-state`;
   /** M29.2 (ADR-0061): the one right the controller holds in SCP's own namespace. */
   const egressRole = `${sa}-egress`;
@@ -191,6 +225,9 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     `NetworkPolicy/${sns}/${sa}`,
     `Role/${ns}/${egressRole}`,
     `RoleBinding/${ns}/${egressRole}`,
+    `Role/${authoringArgoNs}/${authoringRole}`,
+    `RoleBinding/${authoringArgoNs}/${authoringRole}`,
+    `Namespace//${authoringNs}`,
     ...backendNamespaces.flatMap((n) => [`Namespace//${n}`, `RoleBinding/${n}/${sa}`])
   ]);
   const addedKeys = added.map(docKey).sort();
@@ -212,7 +249,8 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
       roleRef.name === clusterRole ||
       roleRef.name === namespacedRole ||
       roleRef.name === stateRole ||
-      roleRef.name === egressRole;
+      roleRef.name === egressRole ||
+      roleRef.name === authoringRole;
     const bindsStackdSa = subjects.some((s) => s.kind === "ServiceAccount" && s.name === sa);
     if (refersToStackd || bindsStackdSa) {
       const onlyStackd =
@@ -236,7 +274,9 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
           ? bindingNs === sns
           : roleRef.name === egressRole
             ? bindingNs === ns
-            : backendNamespaces.includes(bindingNs);
+            : roleRef.name === authoringRole
+              ? bindingNs === authoringArgoNs
+              : backendNamespaces.includes(bindingNs);
       if (b.kind === "RoleBinding" && !allowedHere) {
         fail(
           `[stackd] RoleBinding '${b.metadata?.name}' grants the controller '${roleRef.name}' in '${bindingNs}' — the namespaced role belongs only in the backend namespaces, the state role only in ${sns}`

@@ -10,7 +10,8 @@ import {
   type StackBackendStatusReport,
   type StackNeed,
   type StackSettings,
-  type StackSpecDocument
+  type StackSpecDocument,
+  type PutStackAuthoringRequest
 } from "@scp/schemas";
 import type { HelmRenderer } from "./helm.js";
 import { KubeError, type KubeClient } from "./kube.js";
@@ -80,6 +81,9 @@ export interface StackApi {
   /** M29.2: the hand-off after a backend is healthy, and its withdrawal on disable. */
   putWiring(backend: StackBackend, req: PutStackWiringRequest): Promise<void>;
   deleteWiring(backend: StackBackend): Promise<void>;
+  /** M29.3: the canary-authoring hand-off, and its withdrawal. */
+  putAuthoring(req: PutStackAuthoringRequest): Promise<void>;
+  deleteAuthoring(): Promise<void>;
 }
 
 export interface ControllerDeps {
@@ -107,6 +111,13 @@ export interface ControllerDeps {
     objects: KubeObject[],
     ctx: WiringContext
   ) => Promise<StackNeed[]>;
+  /** M29.3: the stack-level step after every backend (`reconcileAuthoring`): canary authoring.
+   *  Its needs join the argo-rollouts report. */
+  afterStack?: (input: {
+    spec: StackSpecDocument;
+    reports: Map<StackBackend, StackBackendStatusReport>;
+    renders: Map<StackBackend, KubeObject[]>;
+  }) => Promise<StackNeed[]>;
   /** M29.2: runs before a disabled backend is removed — `unwireBackend`. */
   unwire?: (backend: StackBackend, ctx: { wasWired: boolean }) => Promise<void>;
   /** M29.2: what the wiring step needs: a client for the backends' own APIs, and the labels that
@@ -115,6 +126,19 @@ export interface ControllerDeps {
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** What one backend's render may depend on beyond its own spec — typed booleans derived from the
+ *  WHOLE spec, never a string (M29.3: whether canary authoring is wanted, which puts the SCP
+ *  account's create/update grant on the authoring project into Argo CD's render). */
+export interface StackWide {
+  authoring: boolean;
+}
+
+/** Canary authoring is wanted exactly while Argo CD, Gitea and Argo Rollouts are all enabled. */
+export function stackWideOf(backends: StackBackendSpec[]): StackWide {
+  const on = new Set(backends.filter((b) => b.enabled).map((b) => b.backend));
+  return { authoring: on.has("argocd") && on.has("gitea") && on.has("argo-rollouts") };
+}
 
 export interface DesiredSet {
   objects: KubeObject[];
@@ -172,12 +196,14 @@ export async function resolveGiteaSecrets(
 
 export async function renderBackend(
   deps: ControllerDeps,
-  spec: StackBackendSpec
+  spec: StackBackendSpec,
+  stackWide: StackWide = { authoring: false }
 ): Promise<DesiredSet> {
   const ctx: ValuesContext = {
     release: deps.release,
     scpNamespace: deps.scpNamespace,
-    federationRole: deps.federationRole
+    federationRole: deps.federationRole,
+    authoring: stackWide.authoring
   };
   const namespace = backendNamespace(deps.release, spec.backend);
   if (spec.backend === "gitea") ctx.gitea = await resolveGiteaSecrets(deps.kube, namespace);
@@ -313,6 +339,9 @@ async function awaitGone(
 interface Outcome {
   report: StackBackendStatusReport;
   state: BackendState;
+  /** The set a READY backend was reconciled with this tick (M29.3: what the stack-level
+   *  authoring step derives the carrier, endpoints and Rollouts installs from). */
+  objects?: KubeObject[];
 }
 
 type ReportFields = Partial<
@@ -386,7 +415,8 @@ export async function reconcileBackend(
   settings: StackSettings,
   expected: StackBackendIntegrity | undefined,
   progress: (r: StackBackendStatusReport) => Promise<void>,
-  recordedWiring?: StackBackendWiringSpec
+  recordedWiring?: StackBackendWiringSpec,
+  stackWide: StackWide = { authoring: false }
 ): Promise<Outcome> {
   const { backend } = spec;
   const release = deps.release.version;
@@ -434,7 +464,9 @@ export async function reconcileBackend(
   let renderRefs: ObjectRef[] | undefined;
   const trustedInventory = async (): Promise<ObjectRef[]> => {
     if (trust.inventory) return loaded.inventory;
-    renderRefs ??= (await renderBackend(deps, { ...spec, enabled: true })).objects.map(refOf);
+    renderRefs ??= (await renderBackend(deps, { ...spec, enabled: true }, stackWide)).objects.map(
+      refOf
+    );
     return renderRefs;
   };
   const trustedRetained = async (): Promise<ObjectRef[]> =>
@@ -462,7 +494,7 @@ export async function reconcileBackend(
   }
 
   if (backend === "argo-workflows") await ensureArgoServerTls(deps);
-  const desired = await renderBackend(deps, spec);
+  const desired = await renderBackend(deps, spec, stackWide);
   const lastGood = state.lastGood;
   const now = (deps.now ?? (() => new Date()))();
 
@@ -486,7 +518,8 @@ export async function reconcileBackend(
         detail: health.detail,
         ...(health.ready ? {} : { lastError: "a workload that was healthy is not available" })
       }),
-      state
+      state,
+      ...(health.ready ? { objects: desired.objects } : {})
     };
   }
 
@@ -821,7 +854,8 @@ async function promote(
       needs: [...desired.needs, ...wired],
       detail: health.detail
     }),
-    state: next
+    state: next,
+    objects: desired.objects
   };
 }
 
@@ -834,6 +868,8 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
   const integrity = new Map(spec.integrity.map((i) => [i.backend, i]));
   const wiring = new Map((spec.wiring ?? []).map((w) => [w.backend, w]));
   const reports = new Map<StackBackend, StackBackendStatusReport>();
+  const renders = new Map<StackBackend, KubeObject[]>();
+  const stackWide = stackWideOf(spec.backends);
   const publish = async (): Promise<PutStackStatusRequest> => {
     const body: PutStackStatusRequest = {
       release: deps.release.version,
@@ -868,9 +904,11 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
           reports.set(backend, r);
           await publish();
         },
-        wiring.get(backend)
+        wiring.get(backend),
+        stackWide
       );
       reports.set(backend, outcome.report);
+      if (outcome.objects) renders.set(backend, outcome.objects);
     } catch (err) {
       const message =
         err instanceof KubeError && err.status === 403
@@ -893,6 +931,14 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
       );
     }
     last = await publish();
+  }
+  if (deps.afterStack) {
+    const needs = await deps.afterStack({ spec, reports, renders });
+    const r = reports.get("argo-rollouts");
+    if (r && needs.length > 0) {
+      reports.set("argo-rollouts", { ...r, needs: [...r.needs, ...needs].slice(0, 20) });
+      last = await publish();
+    }
   }
   return last!;
 }

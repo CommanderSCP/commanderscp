@@ -256,7 +256,7 @@ async function uidOf(deps: ControllerDeps, ref: ObjectRef): Promise<string | nul
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-async function poll<T>(
+export async function poll<T>(
   deps: ControllerDeps,
   what: string,
   probe: () => Promise<T | undefined>
@@ -365,7 +365,7 @@ function argoWorkflowsAccount(release: StackRelease): string {
   return w.scpAccount;
 }
 
-async function argoCdSession(deps: ControllerDeps, ep: BackendEndpoint): Promise<string> {
+export async function argoCdSession(deps: ControllerDeps, ep: BackendEndpoint): Promise<string> {
   const http = requireHttp(deps);
   const password = await poll(deps, "Argo CD's initial admin secret", () =>
     secretValue(deps, "argocd-initial-admin-secret", ep.namespace, "password")
@@ -442,7 +442,7 @@ async function mintArgoCd(
   return { token, revokeOthers: () => argoCdRevoke(deps, ep, session, account, id) };
 }
 
-async function giteaAdmin(
+export async function giteaAdmin(
   deps: ControllerDeps,
   ep: BackendEndpoint
 ): Promise<{ username: string; auth: string }> {

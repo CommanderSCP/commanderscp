@@ -1,4 +1,10 @@
-import type { StackBackend, StackBackendSpec, StackNeed, StackSizeTier } from "@scp/schemas";
+import {
+  STACK_AUTHORING,
+  type StackBackend,
+  type StackBackendSpec,
+  type StackNeed,
+  type StackSizeTier
+} from "@scp/schemas";
 import {
   RETARGETABLE_IMAGE_PATHS,
   VALUES_KEY,
@@ -65,6 +71,9 @@ export interface ValuesContext {
   scpNamespace: string;
   federationRole: "commander" | "outpost" | "retrans";
   gitea?: GiteaSecrets;
+  /** M29.3: canary authoring is wanted (Argo CD, Gitea and Argo Rollouts all enabled) — a boolean
+   *  derived from the typed spec (`stackWideOf`). */
+  authoring?: boolean;
 }
 
 export function deriveBackendValues(
@@ -85,6 +94,13 @@ export function deriveBackendValues(
     if (!RETARGETABLE_IMAGE_PATHS.includes(dotted)) continue; // parseImageOverrides already refused it
     if (dotted.startsWith(`${key}.`))
       setPath(values["bundledExecutor"] as Record<string, unknown>, dotted, image);
+  }
+  // M29.3 (ADR-0062): the SCP account's create/update on the authoring project — the one grant
+  // authoring needs in Argo CD, rendered with the rest of its RBAC so every resync re-asserts it.
+  // The PROJECT itself is the controller's (`authoring.ts`): its destinations are the clusters
+  // registered with Argo CD, which a render cannot know. Both names are release constants.
+  if (spec.backend === "argocd" && ctx.authoring) {
+    backendValues["authoring"] = { project: STACK_AUTHORING.project, grantOnly: true };
   }
   if (spec.backend === "gitea") {
     if (!ctx.gitea)

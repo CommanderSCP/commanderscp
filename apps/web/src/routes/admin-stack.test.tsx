@@ -88,6 +88,14 @@ function view(over: Partial<StackView> = {}): StackView {
             : null
     })),
     servesThisOrg: true,
+    authoring: {
+      configured: false,
+      project: "scp-authored",
+      namespace: "scp-apps",
+      carrierRevision: null,
+      clusters: [],
+      configuredAt: null
+    },
     ...over
   };
 }
@@ -406,6 +414,13 @@ describe("Admin › Stack", () => {
     expect(page.byTestId("stack-wiring-argo-rollouts").textContent).toBe("n/a");
     expect(page.byTestId("stack-serves-this-org").textContent).toContain(
       "This organization is served"
+    );
+  });
+
+  it("M29.3: the page says canary deployments are off — and that a canary is refused — until authoring is on", async () => {
+    const page = await mount();
+    expect(page.byTestId("stack-authoring").textContent).toContain(
+      "a component asking for a canary is refused"
     );
   });
 

@@ -20,6 +20,7 @@ import { changePlans, changeWaves, objects } from "../db/schema.js";
 import { listRolloutsForComponents } from "../coordination-as-code/rollout-convergence-repo.js";
 import { ociDigestsOfSourceRef } from "./artifact-facts.js";
 import { parseTopologyWaves } from "./topology-waves.js";
+import { registeredArgoCdAuthoring } from "../stack/wired-routing.js";
 import { authoredApplicationProblems, readAuthoringConfig } from "@scp/plugin-argocd";
 import {
   TriggerParameterRefusal,
@@ -101,6 +102,12 @@ export interface DeployLaneTriggerParameterInput {
   sourceRef: unknown;
   /** The module the binding resolved to (`ensureExecutorInstanceStarted`). */
   pluginModule: string | null;
+  /** M29.3: the binding Type being triggered. A DEPLOY (`configuration`) trigger that a rollout was
+   *  declared for is refused unless this lane authors it (`rollout_not_authored`). Absent (older
+   *  callers) never refuses on that ground. */
+  executorType?: string;
+  /** M29.3: a rollback restores; it requests no rollout, so it is never refused on that ground. */
+  isRollback?: boolean;
   binding: {
     externalRef: string | null;
     executionSystemId: string | null;
@@ -416,12 +423,60 @@ async function componentRolloutFor(
   return parsed.data;
 }
 
+/** The binding Type of a deploy — the only Type a declared rollout is about. */
+const DEPLOY_EXECUTOR_TYPE = "configuration";
+
+/**
+ * M29.3 (ADR-0062) — REFUSAL, NOT SILENT DEGRADATION. A rollout is REQUESTED for a deploy target
+ * when the component declares a D12 rollout (`component_rollouts`, any target class) or the release
+ * topology's wave plan declares a `rollout` naming the target, its place or its component. The ONLY
+ * thing that honours one is this lane — an `argocd` binding, `properties.deployment`, and the
+ * execution-system's `authoring` — because no other executor declares a rollout capability
+ * (`@scp/plugin-argocd` alone declares `rollout: {authority: "triggerParams"}`). Before M29.3 every
+ * other path returned `undefined` here and the trigger went ahead as whatever the executor does by
+ * default: a canary asked for, a plain rolling update delivered, and nothing said. Census of those
+ * paths (`grep -rna "return undefined" deploy-lane-trigger-parameters.ts`, no filter): the module is
+ * not `argocd`; the component declares no `properties.deployment`. Each is refused below with a
+ * Decision naming why; the target-shape early returns (not a component/placement, a vanished
+ * object) request nothing, and the argocd-with-deployment path refuses its own way (`no_authoring`).
+ */
+async function refuseUnauthoredRollout(
+  tx: TenantTx,
+  input: DeployLaneTriggerParameterInput,
+  component: { id: string; name: string },
+  memberIds: string[],
+  why: "executor_cannot_author" | "no_deployment_declared"
+): Promise<void> {
+  if (input.executorType !== DEPLOY_EXECUTOR_TYPE || input.isRollback) return;
+  const own = (await listRolloutsForComponents(tx, input.orgId, [component.id]))[0];
+  const wave = own ? undefined : await waveRolloutFor(tx, input.orgId, input.waveId, memberIds);
+  if (!own && !wave?.strategy) return;
+  const source = own
+    ? `the component's own ${own.targetClass} rollout declaration`
+    : `wave '${wave!.waveName ?? "(unnamed)"}' of the release topology`;
+  const how =
+    why === "executor_cannot_author"
+      ? `it is bound to '${input.pluginModule ?? "(unresolved)"}', which cannot author a rollout — ` +
+        `only an Argo CD with canary authoring can (bind it to one; on the Standard Stack, enable ` +
+        `Argo Rollouts, Argo CD and Gitea)`
+      : `the component declares no \`properties.${AUTHORED_DEPLOYMENT_PROPERTY}\` for SCP to author ` +
+        `the Rollout from, so the Application Argo CD syncs would roll out however it already does`;
+  throw new DeploymentAuthoringRefused(
+    `a rollout is requested for component '${component.name}' (${source}), but ${how}. ` +
+      `Refused rather than deployed as a plain rolling update.`,
+    {
+      gate: "deployment_authoring",
+      cause: "rollout_not_authored",
+      reason: why,
+      componentObjectId: component.id
+    }
+  );
+}
+
 export async function deployLaneTriggerParameters(
   tx: TenantTx,
   input: DeployLaneTriggerParameterInput
 ): Promise<AuthoredDeploymentTrigger | undefined> {
-  if (input.pluginModule !== AUTHORING_MODULE) return undefined;
-
   const target = await loadObject(tx, input.orgId, input.targetObjectId);
   if (!target) return undefined;
   let component = target;
@@ -436,12 +491,22 @@ export async function deployLaneTriggerParameters(
   } else if (target.typeId !== "component") {
     return undefined;
   }
+  const memberIds = [input.targetObjectId, component.id, ...(place ? [place.id] : [])];
+
+  if (input.pluginModule !== AUTHORING_MODULE) {
+    await refuseUnauthoredRollout(tx, input, component, memberIds, "executor_cannot_author");
+    return undefined;
+  }
 
   const declared = isRecord(component.properties)
     ? component.properties[AUTHORED_DEPLOYMENT_PROPERTY]
     : undefined;
-  // THE ONE OPT-IN. No declaration ⇒ the import-and-coordinate path, unchanged.
-  if (declared === undefined) return undefined;
+  // THE ONE OPT-IN. No declaration ⇒ the import-and-coordinate path, unchanged — unless a rollout
+  // was asked for, which that path cannot honour (M29.3).
+  if (declared === undefined) {
+    await refuseUnauthoredRollout(tx, input, component, memberIds, "no_deployment_declared");
+    return undefined;
+  }
 
   const refuse = (cause: string, message: string): never => {
     throw new DeploymentAuthoringRefused(message, {
@@ -474,12 +539,21 @@ export async function deployLaneTriggerParameters(
   // (`object:write`), so a bound read from it is a bound the tenant chooses; the write door refuses
   // `authoring` there and the resolver strips it (`SYSTEM_ONLY_CONFIG_KEYS`), and this lane never
   // looks. The same rule ADR-0003 applies to `allowInternalEgress`.
+  //
+  // M29.3 (ADR-0062): for the STANDARD STACK's Argo CD the authoring is the stack controller's
+  // hand-off (`registeredArgoCdAuthoring`) and the object's properties are never read — a
+  // registration's routing is the wiring's (ADR-0061 §5).
   let authoringDoc: unknown;
   if (input.binding?.executionSystemId) {
-    const system = await loadObject(tx, input.orgId, input.binding.executionSystemId);
-    authoringDoc = isRecord(system?.properties)
-      ? system.properties[ARGOCD_AUTHORING_PROPERTY]
-      : undefined;
+    const stack = await registeredArgoCdAuthoring(tx, input.orgId, input.binding.executionSystemId);
+    if (stack.registration) {
+      authoringDoc = stack.authoring ?? undefined;
+    } else {
+      const system = await loadObject(tx, input.orgId, input.binding.executionSystemId);
+      authoringDoc = isRecord(system?.properties)
+        ? system.properties[ARGOCD_AUTHORING_PROPERTY]
+        : undefined;
+    }
   }
   if (authoringDoc === undefined) {
     refuse(
@@ -488,7 +562,9 @@ export async function deployLaneTriggerParameters(
         `is bound to declares no \`${ARGOCD_AUTHORING_PROPERTY}\` source — the carrier chart, the ` +
         `scoped project and the namespace allowlist. Install deploy/helm-bundled/authoring/scp-authored-manifests ` +
         `where that Argo CD can read it and set \`properties.${ARGOCD_AUTHORING_PROPERTY}\` on the ` +
-        `execution-system — an inline binding can never declare it.`
+        `execution-system — an inline binding can never declare it. On the Standard Stack, canary ` +
+        `authoring is on exactly while Argo Rollouts, Argo CD and Gitea are all enabled and ready ` +
+        `(Admin › Stack, \`scp stack enable argo-rollouts\`).`
     );
   }
   const authoring = ArgoCdAuthoringSchema.safeParse(authoringDoc);
@@ -507,7 +583,12 @@ export async function deployLaneTriggerParameters(
       `deployment-target '${place?.name}' declares namespace '${placeNamespace}', which is not an RFC 1123 label.`
     );
   }
-  const namespace = deployment.namespace ?? placeNamespace ?? foldDns1123Label(component.name);
+  // M29.3: with exactly ONE allowed namespace (the Standard Stack's), an undeclared namespace is
+  // that one — the out-of-the-box case needs no namespace declared anywhere.
+  const namespace =
+    deployment.namespace ??
+    placeNamespace ??
+    (auth.namespaces.length === 1 ? auth.namespaces[0]! : foldDns1123Label(component.name));
   // THE NAMESPACE ALLOWLIST, server-side (the bundled AppProject enforces it again in Argo CD).
   if (isForbiddenAuthoringNamespace(namespace) || !auth.namespaces.includes(namespace)) {
     refuse(
@@ -550,13 +631,7 @@ export async function deployLaneTriggerParameters(
 
   // D-a: the component's own declaration wins; the wave plan fills in where it declares none.
   const own = await componentRolloutFor(tx, input.orgId, component.id);
-  const wave = own
-    ? undefined
-    : await waveRolloutFor(tx, input.orgId, input.waveId, [
-        input.targetObjectId,
-        component.id,
-        ...(place ? [place.id] : [])
-      ]);
+  const wave = own ? undefined : await waveRolloutFor(tx, input.orgId, input.waveId, memberIds);
   const strategy = own ?? wave?.strategy;
   const rolloutSource = own
     ? "component"

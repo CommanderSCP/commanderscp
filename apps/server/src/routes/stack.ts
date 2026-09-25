@@ -9,6 +9,7 @@ import {
   PutStackSettingsRequestSchema,
   PutStackStatusRequestSchema,
   PutStackWiringRequestSchema,
+  PutStackAuthoringRequestSchema,
   STACK_CONTROLLER_STALE_AFTER_MS,
   Sha256HexSchema,
   StackBackendParamSchema,
@@ -58,6 +59,16 @@ import {
   type Wiring,
   type WiringRow
 } from "../stack/wiring.js";
+import {
+  AUTHORING_BACKENDS,
+  SELECT_AUTHORING,
+  authoringRowOf,
+  readStackAuthoringOnClient,
+  stackAuthoringView,
+  storeAuthoring,
+  withdrawAuthoring,
+  type StackAuthoringRow
+} from "../stack/authoring.js";
 
 /**
  * THE STANDARD STACK's API (M29.4, ADR-0058). Two audiences, two kinds of door:
@@ -105,6 +116,8 @@ interface StackRows {
   wirings: Wiring[];
   /** M29.2 — whether the stack serves the reader's org; null when no org is reading. */
   servesThisOrg: boolean | null;
+  /** M29.3 — the controller's canary-authoring hand-off. */
+  authoring: StackAuthoringRow;
 }
 
 const iso = (v: Date | string | null): string | null =>
@@ -186,7 +199,8 @@ export function stackViewOf(rows: StackRows, now: Date = new Date()): StackView 
       observedUpgradeGeneration: rows.settings?.controller_observed_upgrade_generation ?? null
     },
     backends: backendViews(rows.backends, rows.wirings),
-    servesThisOrg: rows.servesThisOrg
+    servesThisOrg: rows.servesThisOrg,
+    authoring: stackAuthoringView(rows.authoring, rows.wirings)
   };
 }
 
@@ -218,7 +232,11 @@ export function stackSpecOf(rows: StackRows): StackSpecDocument {
         factsSha256: hexOrNull(w?.factsSha256 ?? null),
         rotationGeneration: w?.rotationGeneration ?? null
       };
-    })
+    }),
+    // M29.3: a hash, never the revision or the cluster names (the census).
+    authoring: {
+      factsSha256: rows.authoring.revision ? hexOrNull(rows.authoring.factsSha256) : null
+    }
   };
 }
 
@@ -243,7 +261,10 @@ async function readStackRows(
   const wirings = ((await exec(sql.raw(SELECT_WIRINGS))) as WiringRow[]).flatMap(
     (r) => wiringOf(r) ?? []
   );
-  return { backends, settings: settings[0], wirings, servesThisOrg };
+  const authoring = authoringRowOf(
+    ((await exec(sql.raw(SELECT_AUTHORING))) as Parameters<typeof authoringRowOf>[0][])[0]
+  );
+  return { backends, settings: settings[0], wirings, servesThisOrg, authoring };
 }
 
 /** Reads through the request-serving pool; the tables' `tenant_read` policy is `USING (true)`. */
@@ -273,7 +294,13 @@ async function readStackOnClient(client: pg.PoolClient): Promise<StackRows> {
          FROM stack_settings WHERE id = 'instance'`
     )
   ).rows[0];
-  return { backends, settings, wirings: await readWiringsOnClient(client), servesThisOrg: null };
+  return {
+    backends,
+    settings,
+    wirings: await readWiringsOnClient(client),
+    servesThisOrg: null,
+    authoring: await readStackAuthoringOnClient(client)
+  };
 }
 
 const SURFACE = "the Standard Stack";
@@ -368,9 +395,21 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
             [backend, enabled, sizeTier ?? null]
           );
           const b = before.rows[0];
+          // M29.3: canary authoring stands on Argo CD, Gitea and Argo Rollouts. Disabling any of
+          // them withdraws it IN THIS TRANSACTION — a canary asked for from this moment is refused,
+          // never rolled out plainly while the controller catches up.
+          const authoringWithdrawn =
+            !enabled && (AUTHORING_BACKENDS as readonly string[]).includes(backend)
+              ? await withdrawAuthoring(client, {
+                  actor,
+                  requestId: request.id,
+                  reason: `${backend} was disabled`
+                })
+              : false;
           return {
             before: b ? { enabled: b.enabled, sizeTier: b.size_tier } : null,
-            after: { enabled, sizeTier: sizeTier ?? b?.size_tier ?? "small" }
+            after: { enabled, sizeTier: sizeTier ?? b?.size_tier ?? "small" },
+            ...(authoringWithdrawn ? { authoringWithdrawn: true } : {})
           };
         }
       );
@@ -696,6 +735,57 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
           dropWiring(client, { backend, actor, requestId: request.id })
         );
       }
+      reply.status(204).send();
+    }
+  });
+
+  // ---- M29.3: canary authoring (ADR-0062) -------------------------------------------------------
+
+  typed.route({
+    method: "PUT",
+    url: "/api/v1/instance/stack/authoring",
+    schema: {
+      body: PutStackAuthoringRequestSchema,
+      response: { 204: z.undefined(), 400: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "putStackAuthoring",
+        summary:
+          "The stack controller's canary-authoring hand-off, once Argo CD, Gitea and Argo Rollouts are ready: the carrier chart's commit in the bundled Gitea and the registered clusters Rollouts is installed in. scpd derives the registered Argo CD's authoring from these and release constants (the stack controller's credential ONLY; audited; ADR-0062)",
+        tags: ["stack"]
+      }
+    },
+    handler: async (request, reply) => {
+      const actor = await requireStackControllerCredential(deps, request);
+      await withOperatorTx(deps.config, SURFACE, (client) =>
+        storeAuthoring(client, { body: request.body, actor, requestId: request.id })
+      );
+      reply.status(204).send();
+    }
+  });
+
+  typed.route({
+    method: "DELETE",
+    url: "/api/v1/instance/stack/authoring",
+    schema: { response: { 204: z.undefined(), 403: ProblemSchema } },
+    config: {
+      openapi: {
+        operationId: "deleteStackAuthoring",
+        summary:
+          "The stack controller withdraws canary authoring (Argo Rollouts disabled, or a backend it needs is gone): from then on a component asking for a canary is refused with a Decision (the stack controller's credential ONLY; audited; ADR-0062)",
+        tags: ["stack"]
+      }
+    },
+    handler: async (request, reply) => {
+      const actor = await requireStackControllerCredential(deps, request);
+      await withOperatorTx(deps.config, SURFACE, (client) =>
+        withdrawAuthoring(client, {
+          actor,
+          requestId: request.id,
+          reason: "withdrawn by the stack controller"
+        })
+      );
       reply.status(204).send();
     }
   });

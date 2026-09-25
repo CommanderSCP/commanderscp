@@ -16,6 +16,9 @@ export interface BackendHttpRequest {
   json?: unknown;
   /** Trust anchor for an https endpoint with a private CA (argo-server's). */
   ca?: string;
+  /** M29.3: the response body is drained, not kept (`body` is undefined) — for a call whose
+   *  answer echoes megabytes back (Gitea's multi-file contents API echoes every file it wrote). */
+  discardBody?: boolean;
 }
 
 export interface BackendHttpResponse {
@@ -57,6 +60,7 @@ export function nodeBackendHttp(opts: { timeoutMs?: number } = {}): BackendHttp 
             const chunks: Buffer[] = [];
             let size = 0;
             res.on("data", (c: Buffer) => {
+              if (req.discardBody) return;
               size += c.length;
               if (size > MAX_BODY_BYTES) {
                 r.destroy(new Error(`${req.method} ${url.origin}${url.pathname}: body too large`));
