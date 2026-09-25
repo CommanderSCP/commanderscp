@@ -2,7 +2,7 @@ import { ScpClient } from "@scp/sdk";
 import { StackBackendSchema } from "@scp/schemas";
 import { resolveHelm, type HelmRenderer } from "./helm.js";
 import { KubeClient, type KubeTransport } from "./kube.js";
-import { parseManifests } from "./manifests.js";
+import { assertStackSet, parseManifests } from "./manifests.js";
 import { backendNamespace, loadRelease, type StackRelease } from "./release.js";
 import type { ControllerDeps, StackApi } from "./reconcile.js";
 import { StateStore } from "./state.js";
@@ -27,6 +27,8 @@ export interface ControllerConfig {
   apiUrl: string;
   operatorCredential: string;
   scpNamespace: string;
+  /** The controller's OWN namespace, where its state lives (review B1/S1). */
+  stackdNamespace: string;
   release: string;
   chartDir: string;
   helmPinFile: string;
@@ -61,6 +63,7 @@ export function loadControllerConfig(env: NodeJS.ProcessEnv = process.env): Cont
     apiUrl: need("SCP_STACKD_API_URL"),
     operatorCredential: need("SCP_STACKD_OPERATOR_CREDENTIAL"),
     scpNamespace: need("SCP_STACKD_SCP_NAMESPACE"),
+    stackdNamespace: need("SCP_STACKD_NAMESPACE"),
     release: need("SCP_STACKD_RELEASE"),
     chartDir: env.SCP_STACKD_CHART_DIR || "/opt/scp/stack/helm-bundled",
     helmPinFile: env.SCP_STACKD_HELM_PIN || "/opt/scp/stack/helm.pin.env",
@@ -93,7 +96,7 @@ export async function buildControllerDeps(
     kube,
     helm,
     release,
-    store: new StateStore(kube, (b) => backendNamespace(release, b)),
+    store: new StateStore(kube, config.stackdNamespace),
     scpNamespace: config.scpNamespace,
     federationRole: config.federationRole,
     readyTimeoutMs: config.readyTimeoutMs,
@@ -128,7 +131,7 @@ export async function selfTest(opts: {
   const lines = [`helm ${helm.version} at ${helm.binary}; release ${release.version}`];
   for (const backend of StackBackendSchema.options) {
     const values = deriveBackendValues(
-      { backend, enabled: true, sizeTier: "small" },
+      { backend, enabled: true, sizeTier: "small", purgeGeneration: 0 },
       {
         release,
         scpNamespace: "scp",
@@ -145,6 +148,9 @@ export async function selfTest(opts: {
       }
     );
     const objects = parseManifests(await helm.template(release.chartDir, values));
+    // The same check the controller runs on every render and every read-back (manifests.ts): an
+    // image whose chart renders a kind the controller would refuse cannot publish.
+    assertStackSet(objects, backendNamespace(release, backend), `the render of ${backend}`);
     const crds = objects.filter((o) => o.kind === "CustomResourceDefinition").length;
     lines.push(
       `${backend}: ${objects.length} objects (${crds} CRDs) into ${backendNamespace(release, backend)}`

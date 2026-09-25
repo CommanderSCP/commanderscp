@@ -71,7 +71,7 @@ describe("the stack controller's inputs", () => {
     expect(httpUsers).toEqual(["kube.ts", "main.ts"]);
   });
 
-  it("reads from the spec only its enumerated fields: backend, enabled, sizeTier, and the settings", () => {
+  it("reads from the spec only its enumerated fields: backend, enabled, sizeTier, purgeGeneration, the settings and the integrity digests", () => {
     const fields = new Set<string>();
     for (const s of sources) {
       for (const m of code(s.text).matchAll(/\bspec\.(\w+)/g)) fields.add(m[1]!);
@@ -85,6 +85,11 @@ describe("the stack controller's inputs", () => {
       "backend",
       "enabled",
       "sizeTier",
+      // A counter: a purge acts only when it exceeds what the controller last acted on.
+      "purgeGeneration",
+      // sha256 hex or null (stack-spec-census): only ever COMPARED with the controller's own
+      // digests, so it can make the controller refuse its stored state, never act on other state.
+      "integrity",
       "settings.updatePolicy",
       "settings.upgradeGeneration",
       "group",

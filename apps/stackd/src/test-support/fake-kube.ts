@@ -25,6 +25,7 @@ const BUILTIN: Record<string, Resource[]> = {
     { name: "configmaps", kind: "ConfigMap", namespaced: true },
     { name: "serviceaccounts", kind: "ServiceAccount", namespaced: true },
     { name: "services", kind: "Service", namespaced: true },
+    { name: "persistentvolumeclaims", kind: "PersistentVolumeClaim", namespaced: true },
     { name: "pods", kind: "Pod", namespaced: true }
   ],
   "apps/v1": [

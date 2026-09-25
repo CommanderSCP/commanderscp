@@ -52,7 +52,11 @@ export const StackNeedCodeSchema = z.enum([
   "infra-runner-image",
   "rpm-builder-image",
   "upgrade-approval",
-  "upgrade-rolled-back"
+  "upgrade-rolled-back",
+  /** A disabled backend's volumes and generate-once secrets are kept until a purge. */
+  "data-retained",
+  /** The controller's stored state did not match scpd's record of it, and was not used. */
+  "state-integrity"
 ]);
 export type StackNeedCode = z.infer<typeof StackNeedCodeSchema>;
 

@@ -19033,7 +19033,7 @@ export type GetStackResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19131,7 +19131,7 @@ export type PutStackBackendResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19226,7 +19226,7 @@ export type PurgeStackBackendResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19321,7 +19321,7 @@ export type PutStackSettingsResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19414,7 +19414,7 @@ export type RequestStackUpgradeResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
                     message: string;
                 }>;
                 observedAt: string;
@@ -19487,7 +19487,7 @@ export type GetStackDiagnosticsResponses = {
                     targetVersion: string | null;
                     lastError: string | null;
                     needs: Array<{
-                        code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                        code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
                         message: string;
                     }>;
                     observedAt: string;
@@ -19573,7 +19573,7 @@ export type PutStackStatusData = {
             targetVersion: string | null;
             lastError: string | null;
             needs: Array<{
-                code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back';
+                code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
                 message: string;
             }>;
             detail: Array<string>;

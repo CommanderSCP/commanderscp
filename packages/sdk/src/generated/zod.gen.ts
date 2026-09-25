@@ -7266,7 +7266,9 @@ export const zGetStackResponse = z.object({
                     'infra-runner-image',
                     'rpm-builder-image',
                     'upgrade-approval',
-                    'upgrade-rolled-back'
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7323,7 +7325,9 @@ export const zPutStackBackendResponse = z.object({
                     'infra-runner-image',
                     'rpm-builder-image',
                     'upgrade-approval',
-                    'upgrade-rolled-back'
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7380,7 +7384,9 @@ export const zPurgeStackBackendResponse = z.object({
                     'infra-runner-image',
                     'rpm-builder-image',
                     'upgrade-approval',
-                    'upgrade-rolled-back'
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7437,7 +7443,9 @@ export const zPutStackSettingsResponse = z.object({
                     'infra-runner-image',
                     'rpm-builder-image',
                     'upgrade-approval',
-                    'upgrade-rolled-back'
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7494,7 +7502,9 @@ export const zRequestStackUpgradeResponse = z.object({
                     'infra-runner-image',
                     'rpm-builder-image',
                     'upgrade-approval',
-                    'upgrade-rolled-back'
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
@@ -7553,7 +7563,9 @@ export const zGetStackDiagnosticsResponse = z.object({
                         'infra-runner-image',
                         'rpm-builder-image',
                         'upgrade-approval',
-                        'upgrade-rolled-back'
+                        'upgrade-rolled-back',
+                        'data-retained',
+                        'state-integrity'
                     ]),
                     message: z.string().min(1).max(500)
                 })).max(20),

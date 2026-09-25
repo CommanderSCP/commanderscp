@@ -48,7 +48,10 @@ describe("deriveBackendValues", () => {
   it("renders only the one backend, with the controller's own deployment facts", async () => {
     const r = await release();
     for (const backend of StackBackendSchema.options) {
-      const values = deriveBackendValues({ backend, enabled: true, sizeTier: "small" }, ctx(r));
+      const values = deriveBackendValues(
+        { backend, enabled: true, sizeTier: "small", purgeGeneration: 0 },
+        ctx(r)
+      );
       const be = values["bundledExecutor"] as Record<string, unknown>;
       expect(Object.keys(be).sort()).toEqual(
         [
@@ -84,7 +87,10 @@ describe("deriveBackendValues", () => {
     ]);
     for (const backend of StackBackendSchema.options) {
       for (const tier of StackSizeTierSchema.options) {
-        const values = deriveBackendValues({ backend, enabled: true, sizeTier: tier }, ctx(r));
+        const values = deriveBackendValues(
+          { backend, enabled: true, sizeTier: tier, purgeGeneration: 0 },
+          ctx(r)
+        );
         for (const { at, value } of strings(values)) {
           const isScaledQuantity = /\.resources\./.test(at) && /^\d+(\.\d+)?[A-Za-z]*$/.test(value);
           expect(
@@ -99,11 +105,11 @@ describe("deriveBackendValues", () => {
   it("scales every request and limit by the tier (small = the chart's defaults)", async () => {
     const r = await release();
     const small = deriveBackendValues(
-      { backend: "argocd", enabled: true, sizeTier: "small" },
+      { backend: "argocd", enabled: true, sizeTier: "small", purgeGeneration: 0 },
       ctx(r)
     );
     const large = deriveBackendValues(
-      { backend: "argocd", enabled: true, sizeTier: "large" },
+      { backend: "argocd", enabled: true, sizeTier: "large", purgeGeneration: 0 },
       ctx(r)
     );
     const res = (v: Record<string, unknown>) =>
@@ -123,7 +129,7 @@ describe("deriveBackendValues", () => {
       "gitea.image": "reg/gitea:1"
     });
     const events = deriveBackendValues(
-      { backend: "argo-events", enabled: true, sizeTier: "small" },
+      { backend: "argo-events", enabled: true, sizeTier: "small", purgeGeneration: 0 },
       ctx(r)
     );
     const be = events["bundledExecutor"] as Record<string, Record<string, unknown>>;
@@ -133,7 +139,10 @@ describe("deriveBackendValues", () => {
 
   it("carries Gitea's read-back secrets, and refuses to render Gitea without them", async () => {
     const r = await release();
-    const v = deriveBackendValues({ backend: "gitea", enabled: true, sizeTier: "small" }, ctx(r));
+    const v = deriveBackendValues(
+      { backend: "gitea", enabled: true, sizeTier: "small", purgeGeneration: 0 },
+      ctx(r)
+    );
     expect(
       (v["bundledExecutor"] as Record<string, Record<string, unknown>>)["gitea"]
     ).toMatchObject({
@@ -143,7 +152,10 @@ describe("deriveBackendValues", () => {
     });
     const { gitea: _omit, ...without } = ctx(r);
     expect(() =>
-      deriveBackendValues({ backend: "gitea", enabled: true, sizeTier: "small" }, without)
+      deriveBackendValues(
+        { backend: "gitea", enabled: true, sizeTier: "small", purgeGeneration: 0 },
+        without
+      )
     ).toThrow(/secrets/);
   });
 
@@ -152,7 +164,8 @@ describe("deriveBackendValues", () => {
     const spec = {
       backend: "argo-workflows" as StackBackend,
       enabled: true,
-      sizeTier: "small" as const
+      sizeTier: "small" as const,
+      purgeGeneration: 0
     };
     const bare = backendNeeds(spec, deriveBackendValues(spec, ctx(r)), ctx(r));
     expect(bare.map((n) => n.code).sort()).toEqual(["infra-state-backend", "rpm-builder-image"]);

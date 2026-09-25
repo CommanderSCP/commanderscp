@@ -77697,7 +77697,9 @@
                                             "infra-runner-image",
                                             "rpm-builder-image",
                                             "upgrade-approval",
-                                            "upgrade-rolled-back"
+                                            "upgrade-rolled-back",
+                                            "data-retained",
+                                            "state-integrity"
                                           ]
                                         },
                                         "message": {
@@ -78030,7 +78032,9 @@
                                             "infra-runner-image",
                                             "rpm-builder-image",
                                             "upgrade-approval",
-                                            "upgrade-rolled-back"
+                                            "upgrade-rolled-back",
+                                            "data-retained",
+                                            "state-integrity"
                                           ]
                                         },
                                         "message": {
@@ -78461,7 +78465,9 @@
                                             "infra-runner-image",
                                             "rpm-builder-image",
                                             "upgrade-approval",
-                                            "upgrade-rolled-back"
+                                            "upgrade-rolled-back",
+                                            "data-retained",
+                                            "state-integrity"
                                           ]
                                         },
                                         "message": {
@@ -78898,7 +78904,9 @@
                                             "infra-runner-image",
                                             "rpm-builder-image",
                                             "upgrade-approval",
-                                            "upgrade-rolled-back"
+                                            "upgrade-rolled-back",
+                                            "data-retained",
+                                            "state-integrity"
                                           ]
                                         },
                                         "message": {
@@ -79311,7 +79319,9 @@
                                             "infra-runner-image",
                                             "rpm-builder-image",
                                             "upgrade-approval",
-                                            "upgrade-rolled-back"
+                                            "upgrade-rolled-back",
+                                            "data-retained",
+                                            "state-integrity"
                                           ]
                                         },
                                         "message": {
@@ -79730,7 +79740,9 @@
                                                 "infra-runner-image",
                                                 "rpm-builder-image",
                                                 "upgrade-approval",
-                                                "upgrade-rolled-back"
+                                                "upgrade-rolled-back",
+                                                "data-retained",
+                                                "state-integrity"
                                               ]
                                             },
                                             "message": {
@@ -80242,7 +80254,9 @@
                                   "infra-runner-image",
                                   "rpm-builder-image",
                                   "upgrade-approval",
-                                  "upgrade-rolled-back"
+                                  "upgrade-rolled-back",
+                                  "data-retained",
+                                  "state-integrity"
                                 ]
                               },
                               "message": {
