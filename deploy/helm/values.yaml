@@ -775,7 +775,9 @@ scanDbCache:
 # verify execution-system endpoints against, for backends serving HTTPS with a private or
 # self-signed certificate. The bundled Argo Workflows server is the case that forced it: it listens
 # on 2746 with a self-signed cert, so #321's NetworkPolicy opened the network and every request
-# still failed verification.
+# still failed verification. SINCE M29.2 (ADR-0061) THE BUNDLED BACKENDS NEED NONE OF THIS: the
+# stack controller hands scpd the CA of each backend it wires, and scpd trusts it for that
+# registration alone. This setting remains for a BYO (Mode A) executor behind a private CA.
 #
 # THIS EXTENDS TRUST, IT NEVER DISABLES IT. There is deliberately no insecure/skip-verify option
 # anywhere on this path: a certificate chaining to neither the system roots nor this bundle is still
@@ -1065,6 +1067,10 @@ containerSecurityContext:
 # listed here is reachable by any execution-system in this deployment that points at it (this bounds
 # the deployment; it does not isolate tenants from each other — same granularity as the NetworkPolicy
 # below, which you almost certainly want to configure at the same time via `networkPolicy.executorEgress`).
+#
+# NOT FOR THE BUNDLED BACKENDS (M29.2, ADR-0061): the stack controller wires those, and their
+# allowance comes from its own knowledge of each endpoint, for that registration only. Do NOT list a
+# bundled Service here — doing so would let ANY execution system in this deployment reach it.
 #
 # internalEgressHosts:
 #   - argocd-server.argocd.svc.cluster.local

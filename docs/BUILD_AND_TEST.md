@@ -2196,6 +2196,42 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     comment corrected.
     - **DoD:** after enabling each backend through the API, its execution system exists and a real `observe()` against it
       succeeds. Deleting any one wiring step turns a test red.
+    - **State (2026-09-25, ADR-0061): BUILT, PR open.** The controller's `afterReady` step (`apps/stackd/src/wiring.ts`)
+      derives each backend's endpoint from its own render, writes scpd's egress NetworkPolicy
+      (`scp-stack-egress-<backend>`, container port), mints the scoped token on the backend, reads the CA, and hands all
+      of it to scpd through `PUT /instance/stack/backends/{b}/wiring` (the controller's credential only); only then are
+      older tokens revoked. scpd keeps the token encrypted at the instance tier (`stack_backend_tokens`, drizzle/0128 —
+      never an org's secret store), registers an `execution-system` in every served org (the bootstrap org by default;
+      others by an instance operator, `scp stack attach`), and routes a registration ONLY from the wiring (endpoint,
+      token, a per-instance CA, an internal-egress allowance pinned to that host). Rotation: `scp stack rotate`,
+      Admin › Stack › Rotate (Argo Workflows' certificate too). Disable unwires first. The main chart's
+      `bundledExecutor` block, the auto-wire Jobs/bins and the three `allow-<backend>` policies are deleted (the stale
+      Argo Workflows comment went with them); `scp-bundled.sh` is render-only. `scp connect gitea`; `/setup` links the
+      Gitea wizard. Dex and argoexec became retargetable (air-gap). How each DoD item is proved:
+      - *registered + a real read, per backend, through the API alone*: `apps/server/src/stack/stack-wiring.kind.test.ts`
+        in job 4e — a REAL Argo CD (a discovery run lists an Application), Argo Workflows (a trivial workflow is
+        submitted through SCP's plugin path, runs to Succeeded, and observe() lists it), Gitea (a discovery run reads a
+        PRIVATE repository with the minted token), Argo Events (registered, no endpoint); rotation re-mints Argo CD's
+        token and argo-server's certificate and the reads still work; disabling Gitea unwires it.
+      - *deleting any one wiring step turns a test red* — mutation log in the PR: token mint, CA publish, egress
+        (the app-layer allowance and the NetworkPolicy), registration, unwire, each red in the kind suite and/or
+        `wiring.test.ts` / `stack-wiring.integration.test.ts`; the post-DNAT port red in helm-verify against the real
+        render.
+      - *a tenant attempt to re-point or re-trust a wired system is refused*: `stack-wiring.integration.test.ts` (409,
+        an OrgAdmin with `secret:write` included; a property rewritten by raw SQL still routes where the wiring says) and
+        the kind suite; `stack-registration-door.test.ts` holds the write flag to the reconciler.
+      - *the M28 class*: a tenant system aimed at a bundled endpoint gets neither token nor egress; an unserved org's
+        tenant tx reads no stack token (RLS); a discovery run drops a caller's `baseUrl`/`serverUrl`/`token`.
+      - **Found on the way**, worth knowing: the old hooks stored the minted token in the bootstrap org's secret store,
+        where any execution system a tenant registered could name it by key and send it where it pointed (the M28 shape);
+        **kindnet enforces an ingress NetworkPolicy** at kind v0.32 (the harness comments said it did not — corrected);
+        an air-gapped Argo CD could never become ready (Dex was not retargetable) and no air-gapped workflow pod could
+        start (argoexec); the real RBAC 403'd an unwire deleting an egress policy Argo Events never had.
+      - **What the DoD does not prove**: the kind suite's scpd is not a pod — it runs in the kind node's network
+        namespace (`kind-runner-harness.sh in-cluster-net`), so the bundle's "only scpd's pods" ingress rule is admitted
+        beside by a fixture and the controller's egress policy is asserted as an object (and against the real render in
+        helm-verify), not enforced end to end. Argo Events' INBOUND wiring (its sensors calling SCP) is an open owner
+        question (ADR-0061). The full chart with the real `scp-stackd` and scpd images in-cluster was not re-run.
   - **M29.3 — canary out of the box.** The authoring carrier is served from the bundled Gitea, and the dedicated AppProject
     is created when Rollouts is enabled. Argo Rollouts is installed into every registered target cluster through an
     authored Argo CD Application.

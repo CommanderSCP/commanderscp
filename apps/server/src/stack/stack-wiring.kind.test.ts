@@ -297,7 +297,8 @@ describe("M29.2 the stack controller wires every backend it installs into SCP (k
       name: "scp-stack-egress-argocd",
       namespace: harness.stackReleaseNamespace
     });
-    expect(JSON.stringify(np?.["spec"])).toContain('"port":8080');
+    expect(np, "the controller wrote no egress NetworkPolicy into SCP's namespace").not.toBeNull();
+    expect(JSON.stringify(np?.["spec"] ?? null)).toContain('"port":8080');
 
     // A fixture for the read to find: an Application (arranged with the fixtures identity).
     await fixture("POST", "/apis/argoproj.io/v1alpha1/namespaces/scp-argocd/applications", {
