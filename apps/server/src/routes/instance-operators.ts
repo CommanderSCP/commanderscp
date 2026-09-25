@@ -120,14 +120,20 @@ export async function insertInstanceOperatorGrant(
 /**
  * THE M29.1 INSTALLER'S SEAM. With `SCP_BOOTSTRAP_INSTANCE_OPERATOR=1` (chart value
  * `instanceOperator.grantBootstrapAdmin`) the api process grants the role to the bootstrap admin
- * of the bootstrap org — once, only while the deployment has NO live grant at all, audited as
- * `install`. So the first person to log in can operate the stack with no credential and no SQL.
+ * of the bootstrap org, audited as `install`, so the first person to log in can operate the stack
+ * with no credential and no SQL.
+ *
+ * ONE-SHOT (owner decision 2026-09-25). It fires only on a deployment that has never had a grant
+ * and on which it has never fired: the audit chain's `install` grant link is the durable record
+ * that it did (append-only — `scp_operator` cannot delete it). Every later state — revocations,
+ * rows removed out of band, zero live grants however reached — is a deliberate change it must not
+ * silently undo; the way back from zero operators is the operator credential (ADR-0058 §7).
  */
 export async function grantBootstrapInstanceOperator(
   deps: AppDeps,
   input: { orgId: string; username: string },
   env: NodeJS.ProcessEnv = process.env
-): Promise<"granted" | "exists" | "skipped"> {
+): Promise<"granted" | "spent" | "skipped"> {
   if (env.SCP_BOOTSTRAP_INSTANCE_OPERATOR !== "1") return "skipped";
   const userId = await withTenantTx(deps.db, input.orgId, async (tx) => {
     const res = await tx.execute<{ id: string }>(
@@ -138,10 +144,12 @@ export async function grantBootstrapInstanceOperator(
   if (!userId) return "skipped";
   return withOperatorTx(deps.config, SURFACE, async (client) => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('scp-bootstrap-instance-operator'))");
-    const live = await client.query(
-      "SELECT 1 FROM instance_operator_grants WHERE revoked_at IS NULL LIMIT 1"
+    const fired = await client.query(
+      `SELECT 1 FROM instance_audit_events
+        WHERE action = 'instance.operator.grant' AND actor->>'mechanism' = 'install' LIMIT 1`
     );
-    if (live.rows.length > 0) return "exists";
+    const everGranted = await client.query("SELECT 1 FROM instance_operator_grants LIMIT 1");
+    if (fired.rows.length > 0 || everGranted.rows.length > 0) return "spent";
     await insertInstanceOperatorGrant(client, {
       orgId: input.orgId,
       userId,
@@ -254,20 +262,36 @@ export function registerInstanceOperatorRoutes(app: FastifyInstance, deps: AppDe
         200: InstanceOperatorGrantSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        409: ProblemSchema
       }
     },
     config: {
       openapi: {
         operationId: "revokeInstanceOperator",
         summary:
-          "Revoke an instance-operator grant (stamps revoked_at; the row and its history remain; audited)",
+          "Revoke an instance-operator grant (stamps revoked_at; the row and its history remain; audited). The LAST live grant cannot be revoked (409): the instance must not be lockable",
         tags: ["instance"]
       }
     },
     handler: async (request, reply) => {
       const actor = await requireInstanceAuthority(deps, request, SURFACE);
       const row = await withOperatorTx(deps.config, SURFACE, async (client) => {
+        // THE INSTANCE MUST NOT BE LOCKABLE (owner decision 2026-09-25): a revoke that would leave
+        // no live grant is refused. Serialised, so two concurrent revokes of the last two grants
+        // cannot both see "one other remains".
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtext('scp-instance-operator-grants'))"
+        );
+        const live = await client.query<{ id: string }>(
+          "SELECT id FROM instance_operator_grants WHERE revoked_at IS NULL"
+        );
+        const ids = live.rows.map((r) => r.id);
+        if (ids.includes(request.params.grantId) && ids.length <= 1) {
+          throw conflict(
+            "this is the last live instance-operator grant, and revoking it would leave no one able to operate the instance — grant the role to someone else first (ADR-0058 §7)"
+          );
+        }
         const res = await client.query<GrantRow>(
           `UPDATE instance_operator_grants SET revoked_at = now(), revoked_by = $2::jsonb
             WHERE id = $1 AND revoked_at IS NULL

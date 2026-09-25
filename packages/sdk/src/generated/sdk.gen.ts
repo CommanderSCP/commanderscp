@@ -2624,7 +2624,7 @@ export const grantInstanceOperator = <ThrowOnError extends boolean = false>(opti
 });
 
 /**
- * Revoke an instance-operator grant (stamps revoked_at; the row and its history remain; audited)
+ * Revoke an instance-operator grant (stamps revoked_at; the row and its history remain; audited). The LAST live grant cannot be revoked (409): the instance must not be lockable
  */
 export const revokeInstanceOperator = <ThrowOnError extends boolean = false>(options: Options<RevokeInstanceOperatorData, ThrowOnError>): RequestResult<RevokeInstanceOperatorResponses, RevokeInstanceOperatorErrors, ThrowOnError> => (options.client ?? client).delete<RevokeInstanceOperatorResponses, RevokeInstanceOperatorErrors, ThrowOnError>({
     responseValidator: async (data) => await zRevokeInstanceOperatorResponse.parseAsync(data),

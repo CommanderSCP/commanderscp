@@ -296,13 +296,63 @@ describe("M29.4 the Standard Stack API (Testcontainers, real scp_operator writes
     }
   });
 
-  it("a revoked grant stops opening the door", async () => {
+  it("THE LAST LIVE GRANT CANNOT BE REVOKED — the instance must not be lockable (409, nothing changes)", async () => {
     const list = await tenant.instanceOperators.list(BOOTSTRAP_OPERATOR_TOKEN);
+    const live = list.items.filter((g) => g.revokedAt === null);
+    expect(live.map((g) => g.userId)).toEqual([operatorUserId]);
+    const before = (await auditActions()).length;
+    // Not by the holder themselves, and not by the operator credential either.
+    for (const attempt of [
+      () => operatorUser.instanceOperators.revoke(live[0]!.id),
+      () => tenant.instanceOperators.revoke(live[0]!.id, BOOTSTRAP_OPERATOR_TOKEN)
+    ]) {
+      const err = await apiError(attempt);
+      expect(err.status).toBe(409);
+      expect(err.problem?.detail).toMatch(/last live instance-operator grant/);
+    }
+    expect(await operatorUser.instanceOperators.self()).toBe(true);
+    expect((await auditActions()).length).toBe(before);
+  });
+
+  it("an operator grants the role to another user, who may then revoke the first — which stops opening the door", async () => {
+    const tenantUserId = (await tenant.auth.me()).userId;
+    await operatorUser.instanceOperators.grant({ orgId, userId: tenantUserId });
+    const list = await tenant.instanceOperators.list();
     const live = list.items.find((g) => g.userId === operatorUserId && g.revokedAt === null)!;
-    await operatorUser.instanceOperators.revoke(live.id);
+    await tenant.instanceOperators.revoke(live.id);
     expect((await apiError(() => operatorUser.stack.requestUpgrade())).status).toBe(403);
     expect(await operatorUser.instanceOperators.self()).toBe(false);
-    expect((await auditActions()).at(-1)).toBe("instance.operator.revoke");
+    expect((await auditActions()).slice(-2)).toEqual([
+      "instance.operator.grant",
+      "instance.operator.revoke"
+    ]);
+    // And now the remaining one is the last: refused.
+    const last = (await tenant.instanceOperators.list()).items.find((g) => g.revokedAt === null)!;
+    expect((await apiError(() => tenant.instanceOperators.revoke(last.id))).status).toBe(409);
+  });
+
+  it("two concurrent revokes of the last two grants cannot both succeed", async () => {
+    // Self-contained (it is also run alone, for the race's mutation proof): exactly two live.
+    for (const userId of [operatorUserId, (await tenant.auth.me()).userId]) {
+      await tenant.instanceOperators
+        .grant({ orgId, userId }, BOOTSTRAP_OPERATOR_TOKEN)
+        .catch((err: unknown) => {
+          if (!(err instanceof ScpApiError && err.status === 409)) throw err;
+        });
+    }
+    const live = (await tenant.instanceOperators.list(BOOTSTRAP_OPERATOR_TOKEN)).items.filter(
+      (g) => g.revokedAt === null
+    );
+    expect(live).toHaveLength(2);
+    const results = await Promise.allSettled(
+      live.map((g) => tenant.instanceOperators.revoke(g.id, BOOTSTRAP_OPERATOR_TOKEN))
+    );
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(
+      (await tenant.instanceOperators.list(BOOTSTRAP_OPERATOR_TOKEN)).items.filter(
+        (g) => g.revokedAt === null
+      )
+    ).toHaveLength(1);
   });
 
   it("the request-serving role cannot write the stack or grant the role — asserted AS scp_app", async () => {
@@ -323,15 +373,19 @@ describe("M29.4 the Standard Stack API (Testcontainers, real scp_operator writes
     }
   });
 
-  it("THE M29.1 SEAM: the bootstrap admin is granted the role only when asked, and only while no grant is live", async () => {
+  it("THE M29.1 SEAM is ONE-SHOT: it grants the bootstrap admin on a fresh install, once, and never again", async () => {
     const org = await createTestOrg(server, "m29-4-seam");
-    const skipped = await grantBootstrapInstanceOperator(
-      server.deps,
-      { orgId: org.orgId, username: org.adminUsername },
-      {}
-    );
-    expect(skipped).toBe("skipped");
-    // All grants are revoked at this point (the case above), so the seam grants.
+    const seam = (env: NodeJS.ProcessEnv) =>
+      grantBootstrapInstanceOperator(
+        server.deps,
+        { orgId: org.orgId, username: org.adminUsername },
+        env
+      );
+    // A deployment that has had grants is not a fresh install: the seam must not fire at all.
+    expect(await seam({ SCP_BOOTSTRAP_INSTANCE_OPERATOR: "1" })).toBe("spent");
+    // A FRESH INSTALL, as the superuser can make one: no grant ever, no audit chain.
+    await admin.query("TRUNCATE instance_operator_grants, instance_audit_events");
+    expect(await seam({})).toBe("skipped");
     const granted = await grantBootstrapInstanceOperator(
       server.deps,
       { orgId: org.orgId, username: org.adminUsername },
@@ -346,12 +400,26 @@ describe("M29.4 the Standard Stack API (Testcontainers, real scp_operator writes
         { orgId: org.orgId, username: org.adminUsername },
         { SCP_BOOTSTRAP_INSTANCE_OPERATOR: "1" }
       )
-    ).toBe("exists");
+    ).toBe("spent");
     const last = (await seamAdmin.instanceOperators.auditEvents()).items.at(-1)!;
     expect(last).toMatchObject({
       action: "instance.operator.grant",
       actor: { mechanism: "install" }
     });
+    // A later deliberate change — here every grant revoked, then removed, out of band — is not
+    // undone: the seam's own audit link is the record that it fired.
+    await admin.query("UPDATE instance_operator_grants SET revoked_at = now()");
+    expect(await seam({ SCP_BOOTSTRAP_INSTANCE_OPERATOR: "1" })).toBe("spent");
+    await admin.query("DELETE FROM instance_operator_grants");
+    expect(await seam({ SCP_BOOTSTRAP_INSTANCE_OPERATOR: "1" })).toBe("spent");
+    expect(await seamAdmin.instanceOperators.self()).toBe(false);
+    // The documented way back (ADR-0058 §7): the operator credential grants again.
+    const seamAdminId = (await seamAdmin.auth.me()).userId;
+    await seamAdmin.instanceOperators.grant(
+      { orgId: org.orgId, userId: seamAdminId },
+      BOOTSTRAP_OPERATOR_TOKEN
+    );
+    expect(await seamAdmin.instanceOperators.self()).toBe(true);
   });
 
   it("re-provisioning is idempotent; a new install secret revokes the old credential BY ID", async () => {
