@@ -286,6 +286,12 @@ describe("M29.3 canary authoring through the Standard Stack (Testcontainers, rea
     await configure();
     await controller.stack.deleteWiring("gitea", STACKD_TOKEN);
     expect((await tenant.stack.get()).authoring.configured).toBe(false);
+    // Withdrawn at the row, not only hidden by the derivation (which also needs Gitea's wiring):
+    // the controller sees no hand-off held, and hands it over again once Gitea is back.
+    const row = await admin.query<{ authoring_revision: string | null }>(
+      "SELECT authoring_revision FROM stack_settings WHERE id = 'instance'"
+    );
+    expect(row.rows[0]!.authoring_revision).toBeNull();
     await configure();
     await controller.stack.deleteAuthoring(STACKD_TOKEN);
     expect((await tenant.stack.get()).authoring.configured).toBe(false);
