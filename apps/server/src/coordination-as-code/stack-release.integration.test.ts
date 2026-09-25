@@ -5,6 +5,8 @@ import type { DesiredStateManifest, Plan } from "@scp/schemas";
 import { auditEvents, objects, relationships } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { releaseObjectStackOwnership } from "./stack-ownership.js";
+import { releaseStackOwnership, stackReleaseAuthorityChecks } from "./stack-release.js";
+import { ProblemError } from "../errors.js";
 import {
   buildTestServer,
   createTestOrg,
@@ -362,5 +364,50 @@ describe("POST /api/v1/stacks/{stackName}/release", () => {
     expect(refused.status).toBe(409);
     expect(refused.detail).toContain("repo-owned by config source");
     expect(await ownerOf(a.shared)).toBe(a.stackName);
+
+    // ORDERING: an unauthorized caller is refused on AUTHORITY, before the binding is read — a 409
+    // here would name the config source to someone with no business knowing it.
+    const viewer = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
+    const viewerRefused = await release(viewer.token, a.stackName, { urns: [a.shared] });
+    expect(viewerRefused.status, viewerRefused.detail).toBe(403);
+    expect(viewerRefused.detail).not.toContain("config source");
+  });
+
+  it("TOCTOU: a row a concurrent apply stamps AFTER the authority bar was read is refused, not released", async () => {
+    // The bar is read in the release's transaction. The stack owns nothing yet, so the bar has no
+    // checks; a separate connection then commits a legitimate apply stamping Z onto the stack. FOR
+    // UPDATE cannot have locked Z (it was not the stack's), so only the set comparison stands
+    // between the release and a row whose authority was never checked.
+    const stackName = `race-${randomUUID().slice(0, 8)}`;
+    const z = `urn:scp:${org.orgName}:service:${stackName}-z`;
+
+    const outcome = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const authorized = await stackReleaseAuthorityChecks(tx, org.orgId, stackName);
+      expect(authorized.checks).toEqual([]);
+
+      await applyManifest({
+        stackName,
+        objects: [service(z, `${stackName}-z`)],
+        relationships: []
+      });
+
+      return releaseStackOwnership(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "toctou-probe",
+        stackName,
+        urns: [z],
+        relationships: [],
+        authorized
+      }).then(
+        () => null,
+        (error: unknown) => error
+      );
+    });
+
+    expect(outcome).toBeInstanceOf(ProblemError);
+    expect((outcome as ProblemError).status).toBe(409);
+    expect((outcome as ProblemError).detail).toContain("changed during the release");
+    expect(await ownerOf(z)).toBe(stackName);
   });
 });

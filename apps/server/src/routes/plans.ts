@@ -246,15 +246,10 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
           permission: "object:read",
           scopeObjectId: auth.orgId
         });
-        // D7, for the reason it guards apply: the repo's next sync would re-adopt what is released.
-        const ownership = evaluateCliApplyOwnership(
-          await findStackConfigSourceBinding(tx, auth.orgId, stackName)
-        );
-        if (!ownership.allowed) throw conflict(ownership.message);
-
-        // BEFORE anything reads the named rows, so a caller without the stack's authority learns
-        // nothing about which of them it owns. See docs/coordination-as-code.md §330.
-        for (const check of await stackReleaseAuthorityChecks(tx, auth.orgId, stackName)) {
+        // BEFORE anything else reads about the stack or the named rows — the D7 binding included — so
+        // a caller without the stack's authority learns nothing. See docs/coordination-as-code.md §330.
+        const authorized = await stackReleaseAuthorityChecks(tx, auth.orgId, stackName);
+        for (const check of authorized.checks) {
           await authorize(tx, {
             orgId: auth.orgId,
             subjectObjectId: auth.subjectObjectId,
@@ -263,13 +258,20 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
           });
         }
 
+        // D7, for the reason it guards apply: the repo's next sync would re-adopt what is released.
+        const ownership = evaluateCliApplyOwnership(
+          await findStackConfigSourceBinding(tx, auth.orgId, stackName)
+        );
+        if (!ownership.allowed) throw conflict(ownership.message);
+
         return releaseStackOwnership(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
           requestId: request.id,
           stackName,
           urns,
-          relationships: edges
+          relationships: edges,
+          authorized
         });
       });
       reply.status(200).send(result);

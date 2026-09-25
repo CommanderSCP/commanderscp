@@ -2430,7 +2430,14 @@ For every LIVE object the stack owns, the type's apply write permission at that 
 
 **NOT org admin either.** A team that owns a container holds write on everything beneath it; its stacks live there, so it can release from its own retired stack without asking an org owner (the "container" case). An edge that reaches OUTSIDE the container needs `relationship:write` at the far end too, because decommissioning the stack would delete that edge (the "edges" case, mutation m3).
 
-**CHECKED BEFORE ANY NAMED ROW IS READ,** so a caller without the stack's authority gets the same 403 whatever it names and learns nothing about which rows the stack owns. A stack that owns nothing contributes no checks, so the request reaches the ownership validation and 409s — revealing only that the stack owns none of the named rows, which the `object:read` floor already lets the caller see through `POST /plans`.
+**CHECKED BEFORE ANY NAMED ROW — OR THE STACK'S CONFIG-SOURCE BINDING — IS READ,** so a caller without the stack's authority gets the same 403 whatever it names and learns nothing about which rows the stack owns or which config source (D7) claims it. (Review of #419: the D7 lookup first ran ahead of the bar, so a Viewer got a 409 naming the config source.) A stack that owns nothing contributes no checks, so the request reaches the ownership validation and 409s — revealing only that the stack owns none of the named rows, which the `object:read` floor already lets the caller see through `POST /plans`.
+
+**THE BAR AND THE RELEASE ARE THE SAME SET OF ROWS — the load-bearing half, found in adversarial review of #419.** The bar enumerates the stack's rows in one statement and the release locks the NAMED rows in a later one; under READ COMMITTED those are two snapshots. Measured probe: a stack owning nothing yields zero checks; a separate connection then commits a legitimate apply that stamps object Z onto the stack; the release, naming Z, cleared it with no authority ever checked for Z. Two parts close it:
+
+- **(a) set membership, which is load-bearing.** `stackReleaseAuthorityChecks` returns the ids it covered, and `releaseStackOwnership` refuses (409, "changed during the release … retry") any named row the stack owns that is not in that set. Nothing is released and nothing is audited.
+- **(b) the bar's read is `FOR UPDATE`.** This pins the rows it covered, so none can be pruned, retyped or moved under the check. It CANNOT block a row stamped onto the stack after the read — `FOR UPDATE` locks existing rows, and Z was not the stack's yet — which is exactly why (a), not (b), is what closes the probe.
+
+The probe is permanent (the "TOCTOU" case: the bar read in an open transaction, a concurrent apply committed through HTTP on another connection, the release refused), and removing (a) turns it red (m11).
 
 ### §331. The verb: validate, release, audit — in one transaction
 

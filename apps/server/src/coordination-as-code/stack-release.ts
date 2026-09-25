@@ -10,12 +10,23 @@ import {
   releaseRelationshipStackOwnership
 } from "./stack-ownership.js";
 
+/** The stack's authority bar, and the exact rows it was computed over. See docs/coordination-as-code.md §330. */
+export interface StackReleaseAuthority {
+  checks: ScopeCheck[];
+  /** Ids of every live object/edge the bar covered. A release may clear ONLY these (§330). */
+  objectIds: ReadonlySet<string>;
+  edgeIds: ReadonlySet<string>;
+}
+
 /** The authority a release requires: what DECOMMISSIONING the whole stack would. See docs/coordination-as-code.md §330. */
 export async function stackReleaseAuthorityChecks(
   tx: TenantTx,
   orgId: string,
   stackName: string
-): Promise<ScopeCheck[]> {
+): Promise<StackReleaseAuthority> {
+  // FOR UPDATE pins the rows the bar covers, so none can leave or change type under it. It cannot
+  // pin a row STAMPED LATER — a concurrent apply that commits after this read — which is why
+  // `releaseStackOwnership` refuses any row outside `objectIds`/`edgeIds`: that is the load-bearing half.
   const ownedObjects = await tx
     .select({ id: objects.id, typeId: objects.typeId })
     .from(objects)
@@ -25,9 +36,10 @@ export async function stackReleaseAuthorityChecks(
         eq(objects.managedByStack, stackName),
         isNull(objects.deletedAt)
       )
-    );
+    )
+    .for("update");
   const ownedEdges = await tx
-    .select({ fromId: relationships.fromId, toId: relationships.toId })
+    .select({ id: relationships.id, fromId: relationships.fromId, toId: relationships.toId })
     .from(relationships)
     .where(
       and(
@@ -35,7 +47,8 @@ export async function stackReleaseAuthorityChecks(
         eq(relationships.managedByStack, stackName),
         isNull(relationships.deletedAt)
       )
-    );
+    )
+    .for("update");
 
   // The same (permission, scope) pairs `prepareApplyChecks` pushes for a `delete` entry.
   const checks = new Map<string, ScopeCheck>();
@@ -48,7 +61,11 @@ export async function stackReleaseAuthorityChecks(
     add({ permission: "relationship:write", scopeObjectId: e.fromId });
     add({ permission: "relationship:write", scopeObjectId: e.toId });
   }
-  return [...checks.values()];
+  return {
+    checks: [...checks.values()],
+    objectIds: new Set(ownedObjects.map((o) => o.id)),
+    edgeIds: new Set(ownedEdges.map((e) => e.id))
+  };
 }
 
 /** Why a named row is not releasable from `stackName`, or null when it is. */
@@ -77,6 +94,8 @@ export async function releaseStackOwnership(
     stackName: string;
     urns: readonly string[];
     relationships: readonly StackReleaseRelationship[];
+    /** What the caller AUTHORIZED, from `stackReleaseAuthorityChecks` in this same transaction. */
+    authorized: StackReleaseAuthority;
   }
 ): Promise<ReleaseStackOwnershipResponse> {
   const { orgId, stackName } = input;
@@ -172,6 +191,20 @@ export async function releaseStackOwnership(
   }
 
   const releasedObjects = urns.map((urn) => byUrn.get(urn)!);
+
+  // THE BAR AND THE RELEASE MUST BE THE SAME SET. A row the stack owns NOW but did not own when the
+  // bar was computed (a concurrent apply stamped it in between — FOR UPDATE cannot lock a row that
+  // was not yet the stack's) was never authorized. See docs/coordination-as-code.md §330.
+  const unauthorized = [
+    ...releasedObjects.filter((o) => !input.authorized.objectIds.has(o.id)).map((o) => o.urn),
+    ...releasedEdges.filter((e) => !input.authorized.edgeIds.has(e.id)).map(edgeLabel)
+  ];
+  if (unauthorized.length > 0) {
+    throw conflict(
+      `stack '${stackName}' changed during the release (it now owns ${unauthorized.join(", ")}, ` +
+        `which its authority was not checked over), so nothing was released; retry`
+    );
+  }
   const objectCount = await releaseObjectStackOwnership(
     tx,
     orgId,

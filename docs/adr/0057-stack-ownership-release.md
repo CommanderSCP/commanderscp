@@ -27,12 +27,18 @@ bound at ONE object could do it.
    org-root floor. Rejected: the per-object bar ("you may release what you could delete"), because
    it admits R2 at exactly the authority that made R2 a defect; org admin, because a team that owns
    the container its stacks live in already holds this authority and should not need an org owner.
-3. **D7 applies**: a stack bound to a config source is refused like a direct apply, because the
-   repo's next sync re-adopts whatever it still declares.
-4. **Tombstoned rows are refused**, not released: every reader of the column filters live rows and
+3. **The bar and the release are one set** (adversarial review of #419). The bar's read is
+   `FOR UPDATE`, and the release refuses (409, retry) any named row absent from the exact id set the
+   bar covered. The set comparison is the load-bearing half: `FOR UPDATE` cannot block a row a
+   concurrent apply stamps onto the stack after the bar was read, and that race — zero checks, then
+   a committed stamp, then a release of the new row — was measured before the fix.
+4. **D7 applies, after the bar**: a stack bound to a config source is refused like a direct apply, because the
+   repo's next sync re-adopts whatever it still declares. It is checked AFTER the authority bar, so
+   an unauthorized caller gets 403 and never learns which config source claims the stack.
+5. **Tombstoned rows are refused**, not released: every reader of the column filters live rows and
    there is no restore path, so their ownership is inert and a "success" would mask a mis-aimed
    request.
-5. The release is the second writer in `stack-ownership.ts`, which stays the one module writing the
+6. The release is the second writer in `stack-ownership.ts`, which stays the one module writing the
    column on objects and relationships (census-held by `stack-ownership-reachability.test.ts`).
 
 ## Consequences
