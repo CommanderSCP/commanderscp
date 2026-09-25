@@ -42,6 +42,7 @@ WAIT_TIMEOUT="600s"
 # rollout wait must not silently re-create the collision.
 SCP_WAIT_TIMEOUT="900s"
 DRY_RUN=0
+KUBE_CONTEXT=""
 declare -a HELM_EXTRA=()
 
 usage() {
@@ -63,6 +64,8 @@ Options:
                            activeDeadlineSeconds (600s) or helm masks the Job's real failure.
   --chart <dir>            bundled chart dir (default: deploy/helm-bundled)
   --scp-chart <dir>        main SCP chart dir for the hook/NetworkPolicy upgrade (default: deploy/helm)
+  --kube-context <ctx>     kube context to target (default: current context) — pinned for every
+                           kubectl/helm call this script makes, via an isolated kubeconfig
   --dry-run                same as 'render' — print, apply nothing
 EOF
   exit "${1:-2}"
@@ -104,11 +107,26 @@ while [ $# -gt 0 ]; do
     --scp-chart)     SCP_CHART_DIR="$2"; shift 2 ;;
     --values)        HELM_EXTRA+=(--values "$2"); shift 2 ;;
     --set)           HELM_EXTRA+=(--set "$2"); shift 2 ;;
+    --kube-context)  KUBE_CONTEXT="$2"; shift 2 ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage 0 ;;
     *) echo "scp-bundled: unknown option '$1'" >&2; usage 2 ;;
   esac
 done
+
+# #422 review fix (SHOULD-FIX 7) — same isolation technique as install.sh (which sets this up for
+# every child process, THIS script included, when invoked through it): resolve --kube-context ONCE
+# and pin it for every kubectl/helm call below via an isolated, minified kubeconfig, so a caller
+# naming a non-current context (or install.sh forwarding one) cannot land some objects in the
+# right cluster and others in whatever was already `current-context`.
+if [[ -n "${KUBE_CONTEXT:-}" ]]; then
+  command -v kubectl >/dev/null 2>&1 || fail "--kube-context requires kubectl on PATH"
+  ISOLATED_KUBECONFIG="$(mktemp -d)/scp-bundled.kubeconfig"
+  kubectl config view --minify --context="$KUBE_CONTEXT" --flatten > "$ISOLATED_KUBECONFIG" \
+    || fail "no such kube context '${KUBE_CONTEXT}' (kubectl config view --minify failed)"
+  export KUBECONFIG="$ISOLATED_KUBECONFIG"
+  log "targeting kube context '${KUBE_CONTEXT}'"
+fi
 
 command -v helm >/dev/null 2>&1 || fail "helm not found on PATH"
 command -v kubectl >/dev/null 2>&1 || fail "kubectl not found on PATH"

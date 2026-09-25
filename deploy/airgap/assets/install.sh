@@ -153,6 +153,26 @@ if [[ ! -f "$PUBKEY" ]]; then
   exit 2
 fi
 
+# #422 review fix (SHOULD-FIX 7) — RESOLVE --kube-context ONCE, HERE, and PIN it for every
+# kubectl/helm call this script (and anything it shells out to) makes from this point on,
+# including scp-bundled.sh (step 4 below) — which used to see none of this: only the ONE `helm
+# upgrade --install` for the SCP release itself got `--kube-context`, so an operator naming a
+# non-current context got the SCP release in the right place and the bundled backends in whatever
+# context happened to be `current-context` — a split-brain install across two clusters with no
+# error. Building an ISOLATED, MINIFIED kubeconfig whose `current-context` IS the target and
+# exporting KUBECONFIG to it does this for every child process (scp-bundled.sh included) without
+# threading a flag through each of that script's ~20 kubectl/helm call sites individually — the
+# same isolation technique scripts/kind-drill.sh already uses, generalized here to "pin to a named
+# context" rather than "pin to a freshly created cluster".
+if [[ -n "$KUBE_CONTEXT" && "$MODE" == "helm" ]]; then
+  command -v kubectl >/dev/null 2>&1 || { echo "install.sh: --kube-context requires kubectl on PATH" >&2; exit 2; }
+  ISOLATED_KUBECONFIG="$(mktemp -d)/install-sh.kubeconfig"
+  kubectl config view --minify --context="$KUBE_CONTEXT" --flatten > "$ISOLATED_KUBECONFIG" \
+    || { echo "install.sh: FAIL — no such kube context '${KUBE_CONTEXT}' (kubectl config view --minify failed)" >&2; exit 2; }
+  export KUBECONFIG="$ISOLATED_KUBECONFIG"
+  echo "== targeting kube context '${KUBE_CONTEXT}' (cluster: $(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo '?')) =="
+fi
+
 for bin in skopeo cosign; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "install.sh: required tool '$bin' not found on PATH" >&2

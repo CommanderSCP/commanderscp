@@ -46,13 +46,22 @@ export SCP_CONFIG_DIR
 log() { echo "==> $*"; }
 fail() { echo "scp-install-kind-drill: FAIL — $*" >&2; exit 1; }
 
+# #422 adversarial review NIT: the install log's one printed secret (the bootstrap admin's
+# one-time password, install-cli.ts's "bootstrap admin one-time password (shown once — not stored
+# in plaintext): <password>" line) must never reach CI's own captured stdout/stderr, even on
+# failure — CI logs are a durable, widely-readable artifact this drill has no business writing a
+# live credential into, unlike the ephemeral terminal ADR-0060 §2 is actually about.
+redact_install_log() {
+  sed -E 's/(one-time password \(shown once — not stored in plaintext\): ).*/\1[REDACTED]/' "$INSTALL_LOG"
+}
+
 cleanup() {
   local status=$?
   log "cleanup (exit code $status)"
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   if [ "$status" -ne 0 ]; then
-    echo "--- scp-install-kind-drill.sh FAILED — dumping the install log and cluster state ---" >&2
-    cat "$INSTALL_LOG" >&2 || true
+    echo "--- scp-install-kind-drill.sh FAILED — dumping the install log (redacted) and cluster state ---" >&2
+    redact_install_log >&2 || true
     kubectl get pods -A -o wide 2>&1 || true
   fi
   kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
@@ -63,7 +72,7 @@ trap cleanup EXIT
 log "building the scpd image"
 docker build -t "scp:${IMAGE_TAG}" .
 
-log "building the scp-stackd image (ADR-0058) — stackd.enabled defaults to true since this ADR"
+log "building the scp-stackd image (ADR-0058) — scp install turns stackd.enabled on explicitly for a commander (ADR-0060 §3; the chart's OWN bare-install default stays off)"
 docker build -f apps/stackd/Dockerfile -t "scp-stackd:${IMAGE_TAG}" .
 
 log "creating kind cluster '${CLUSTER_NAME}'"
@@ -95,7 +104,7 @@ node "${ROOT_DIR}/packages/cli/dist/bin.js" install \
   >"$INSTALL_LOG" 2>&1
 INSTALL_EXIT=$?
 set -e
-cat "$INSTALL_LOG"
+redact_install_log
 [ "$INSTALL_EXIT" -eq 0 ] || fail "scp install exited ${INSTALL_EXIT}"
 
 log "asserting the install log proves every DoD item — NOT by reading kubectl logs, by reading what scp install itself already printed to ITS OWN terminal"
@@ -156,4 +165,4 @@ for backend in argocd argo-workflows argo-rollouts argo-events gitea; do
 done
 log "PASS: scp stack status (fresh call) still reports every backend"
 
-log "M29.1 kind install drill: ALL CHECKS PASSED (scp install -> logged-in admin session -> stack ready/needs -> HQ outpost, no kubectl logs, no kubectl against scp's namespace for verification)"
+log "M29.1 kind install drill: ALL CHECKS PASSED (scp install -> logged-in admin session -> stack ready/needs -> HQ outpost; verification reads only scp CLI output and a port-forward's OWN announced local port — never kubectl logs/exec into scp's namespace, and never a re-printed credential)"
