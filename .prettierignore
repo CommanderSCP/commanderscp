@@ -24,6 +24,11 @@ deploy/helm/templates/
 deploy/helm-bundled/templates/
 deploy/helm-bundled/authoring/scp-authored-manifests/templates/
 
+# tools/vendor-refresh's own test fixture chart — the same Go-templated-YAML parse failure as above,
+# on a stand-in chart used ONLY to render `helm template` locally in tests (never fetched, never
+# real gitea-charts/gitea).
+tools/vendor-refresh/src/test-support/fixtures/gitea-chart/templates/
+
 # VENDORED UPSTREAM MANIFESTS — verbatim copies of Argo CD / Argo Workflows / Argo Events / Gitea
 # install YAML, kept byte-identical to the release they were pulled from (charter principle 5: no
 # runtime network calls, everything vendored). Reformatting them would rewrite ~183,000 lines of
