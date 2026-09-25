@@ -116,14 +116,21 @@ describe("helmSetArgs", () => {
     expect(args).toContain("instanceOperator.grantBootstrapAdmin=true");
   });
 
-  it("does NOT set stackd.enabled for commander/outpost — the chart's own default (true) covers it", () => {
+  it("explicitly turns stackd ON for commander/outpost — the chart's own default is OFF (#422 review: GitOps/Argo CD safety)", () => {
     const args = helmSetArgs({
       role: "commander",
       profile: "eval",
       orgName: "default",
       adminUsername: "admin"
     });
-    expect(args.some((a) => a.startsWith("stackd.enabled"))).toBe(false);
+    expect(args).toContain("stackd.enabled=true");
+    const outpostArgs = helmSetArgs({
+      role: "outpost",
+      profile: "eval",
+      orgName: "default",
+      adminUsername: "admin"
+    });
+    expect(outpostArgs).toContain("stackd.enabled=true");
   });
 
   it("turns stackd OFF for retrans — nothing to install, so the near-cluster-admin controller stays off", () => {
@@ -165,8 +172,8 @@ describe("helmSetArgs", () => {
 function fakeShell(overrides: Partial<Shell> = {}): Shell {
   const calls: { method: string; args: unknown[] }[] = [];
   const base: Shell = {
-    async exec(cmd, args) {
-      calls.push({ method: "exec", args: [cmd, args] });
+    async exec(cmd, args, opts) {
+      calls.push({ method: "exec", args: [cmd, args, opts] });
       return { code: 0, stdout: "", stderr: "" } satisfies ExecResult;
     },
     log(line) {
@@ -490,6 +497,49 @@ describe("declareHqOutpost", () => {
 
 describe("runInstall — kube mode", () => {
   it(
+    "#422 review fix (SHOULD-FIX 6): a re-run against an already-installed release (the " +
+      "bootstrap-admin Secret is unreadable — blanked by a prior successful install) succeeds " +
+      "rather than throwing, and skips login/stack-enable/HQ-declare (there is no credential to " +
+      "log in with)",
+    async () => {
+      const shell = fakeShell({ readSecretKey: async () => null });
+      const summary = await runInstall(
+        {
+          role: "commander",
+          profile: "eval",
+          mode: "kube",
+          namespace: "scp",
+          releaseName: "scp",
+          with: [],
+          without: [],
+          yes: true,
+          orgName: "default",
+          adminUsername: "admin",
+          portForwardPort: 18080,
+          helmTimeoutSeconds: 60,
+          stackTimeoutSeconds: 1,
+          dryRun: false,
+          bootstrapK3s: false,
+          set: []
+        },
+        shell
+      );
+      expect(summary.loggedInAs).toBe("");
+      expect(summary.hqOutpostDeclared).toBe(false);
+      expect(sdkCalls.find((c) => c.method === "login")).toBeUndefined();
+      expect(sdkCalls.find((c) => c.method === "stack.putBackend")).toBeUndefined();
+      expect(sdkCalls.find((c) => c.method === "federation.createOutpost")).toBeUndefined();
+      const logs = (shell as Shell & { __calls: { method: string; args: unknown[] }[] }).__calls
+        .filter((c) => c.method === "log")
+        .map((c) => String(c.args[0]));
+      expect(
+        logs.some((l) => l.includes("ALREADY installed") || l.includes("already installed"))
+      ).toBe(true);
+    },
+    10_000
+  );
+
+  it(
     "helm installs with the role/profile values, reads+deletes the credential, logs in, enables " +
       "the role's backends, and declares the HQ outpost — all through the given --base-url (no port-forward)",
     async () => {
@@ -557,6 +607,48 @@ describe("runInstall — kube mode", () => {
     }
   );
 
+  it(
+    "#422 review fix (SHOULD-FIX 9): a FAILED redactSecretKey is reported loudly but does not " +
+      "abort the rest of the install — login, stack-enable and HQ-outpost-declare still complete",
+    async () => {
+      const shell = fakeShell({
+        redactSecretKey: async () => {
+          throw new Error('kubectl patch exited 1: secrets "x" not found');
+        }
+      });
+      const summary = await runInstall(
+        {
+          role: "commander",
+          profile: "eval",
+          mode: "kube",
+          namespace: "scp",
+          releaseName: "scp",
+          with: [],
+          without: ["argo-workflows", "argo-events", "argo-rollouts", "gitea"],
+          yes: true,
+          orgName: "default",
+          adminUsername: "admin",
+          baseUrl: "http://127.0.0.1:9-fake/api/v1",
+          portForwardPort: 18080,
+          helmTimeoutSeconds: 60,
+          stackTimeoutSeconds: 1,
+          dryRun: false,
+          bootstrapK3s: false,
+          set: []
+        },
+        shell
+      );
+      expect(summary.loggedInAs).toBe("admin");
+      expect(summary.hqOutpostDeclared).toBe(true);
+      const logs = (shell as Shell & { __calls: { method: string; args: unknown[] }[] }).__calls
+        .filter((c) => c.method === "log")
+        .map((c) => String(c.args[0]));
+      expect(logs.some((l) => l.includes("WARNING") && l.includes("kubectl patch exited 1"))).toBe(
+        true
+      );
+    }
+  );
+
   it("retrans never touches the stack API and never declares an HQ outpost", async () => {
     const shell = fakeShell();
     const summary = await runInstall(
@@ -613,4 +705,88 @@ describe("runInstall — kube mode", () => {
     expect(calls.filter((c) => c.method === "exec")).toHaveLength(0);
     expect(sdkCalls).toHaveLength(0);
   });
+
+  it(
+    "#422 review fix (SHOULD-FIX 7): prints the resolved kube context before acting, even under " +
+      "--yes and --dry-run",
+    async () => {
+      const shell = fakeShell();
+      await runInstall(
+        {
+          role: "commander",
+          profile: "eval",
+          mode: "kube",
+          kubeContext: "kind-my-cluster",
+          namespace: "scp",
+          releaseName: "scp",
+          with: [],
+          without: [],
+          yes: true,
+          orgName: "default",
+          adminUsername: "admin",
+          portForwardPort: 18080,
+          helmTimeoutSeconds: 60,
+          stackTimeoutSeconds: 1,
+          dryRun: true,
+          bootstrapK3s: false,
+          set: []
+        },
+        shell
+      );
+      const logs = (shell as Shell & { __calls: { method: string; args: unknown[] }[] }).__calls
+        .filter((c) => c.method === "log")
+        .map((c) => String(c.args[0]));
+      expect(logs.some((l) => l.includes("target: kube context 'kind-my-cluster'"))).toBe(true);
+    }
+  );
+});
+
+describe("runInstall — compose mode", () => {
+  it(
+    "MUTATION-CAUGHT (#422 BLOCKING 1): the role/profile/org/password env actually reaches " +
+      "`docker compose up` — before this fix, `env` was built and never passed to `run()`, so " +
+      "compose always installed a default eval commander with a password the installer never " +
+      "knew, and the login below would have failed against a real docker compose",
+    async () => {
+      const shell = fakeShell();
+      const summary = await runInstall(
+        {
+          role: "outpost",
+          profile: "production",
+          mode: "compose",
+          namespace: "scp",
+          releaseName: "scp",
+          with: [],
+          without: [],
+          yes: true,
+          orgName: "acme-outpost",
+          adminUsername: "root",
+          portForwardPort: 18080,
+          helmTimeoutSeconds: 60,
+          stackTimeoutSeconds: 1,
+          dryRun: false,
+          bootstrapK3s: false,
+          set: []
+        },
+        shell
+      );
+      const execCalls = (
+        shell as Shell & { __calls: { method: string; args: unknown[] }[] }
+      ).__calls.filter((c) => c.method === "exec");
+      const composeCall = execCalls.find((c) => c.args[0] === "docker");
+      expect(composeCall).toBeDefined();
+      const composeEnv = composeCall!.args[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(composeEnv?.env).toBeDefined();
+      expect(composeEnv!.env!.SCP_FEDERATION_ROLE).toBe("outpost");
+      expect(composeEnv!.env!.SCP_DEPLOYMENT_MODE).toBe("production");
+      expect(composeEnv!.env!.SCP_BOOTSTRAP_ORG).toBe("acme-outpost");
+      expect(composeEnv!.env!.SCP_BOOTSTRAP_ADMIN_USERNAME).toBe("root");
+      // The SAME password `finishLogin` logs in with must be the one handed to the container —
+      // this is the property the missing `{ env }` broke: the two were generated independently.
+      const password = composeEnv!.env!.SCP_BOOTSTRAP_ADMIN_PASSWORD;
+      expect(password).toBeTruthy();
+      expect(sdkCalls.find((c) => c.method === "login")?.args).toEqual(["root", password]);
+      expect(summary.loggedInAs).toBe("root");
+    }
+  );
 });

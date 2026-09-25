@@ -139,9 +139,13 @@ export function helmSetArgs(opts: {
     // kind-drill.sh's install both make.
     args.push("postgres.evalInCluster.enabled=true");
   }
-  if (!wantsStackController(opts.role)) {
-    args.push("stackd.enabled=false");
-  }
+  // #422 review — orchestrator decision: the chart's OWN default for stackd.enabled stays `false`
+  // (a GitOps-tracked release that never asked for the stack controller must not gain
+  // near-cluster-admin rights on an ordinary sync — see values.yaml's comment on `stackd:`).
+  // `scp install` is what turns it on for a fresh install, per role: every role but retrans wants
+  // it (`wantsStackController`), and this is the one place that asserts so explicitly, matching
+  // the charter's "on by default for NEW installs" through the installer rather than the chart.
+  args.push(`stackd.enabled=${wantsStackController(opts.role)}`);
   return args.flatMap((kv) => ["--set", kv]);
 }
 
@@ -230,7 +234,13 @@ export function nodeShell(): Shell {
       return Buffer.from(result.stdout.trim(), "base64").toString("utf8");
     },
     async redactSecretKey({ context, namespace, name, key }) {
-      await this.exec("kubectl", [
+      // #422 review fix (SHOULD-FIX 9) — this used to ignore the patch's exit code entirely: a
+      // failed `kubectl patch` (RBAC, a renamed Secret, a network blip) silently left the
+      // plaintext password sitting in the Secret while the installer went on to print "shown
+      // once — not stored in plaintext" regardless. Fail loudly instead — the operator can then
+      // blank it by hand (`kubectl patch secret <name> -n <ns> --type=merge -p
+      // '{"stringData":{"password":""}}'`) rather than being told a false thing succeeded.
+      const result = await this.exec("kubectl", [
         ...kubectlArgs(context, ["patch", "secret", name]),
         "-n",
         namespace,
@@ -238,6 +248,14 @@ export function nodeShell(): Shell {
         "-p",
         JSON.stringify({ stringData: { [key]: "" } })
       ]);
+      if (result.code !== 0) {
+        throw new Error(
+          `could not blank Secret '${name}' key '${key}' in namespace '${namespace}' (kubectl ` +
+            `exited ${result.code}): ${result.stderr.trim() || result.stdout.trim()}. The bootstrap ` +
+            `admin password is STILL in this Secret in plaintext — blank it yourself: kubectl patch ` +
+            `secret ${name} -n ${namespace} --type=merge -p '{"stringData":{"${key}":""}}'`
+        );
+      }
     }
   };
 }
@@ -326,8 +344,10 @@ async function bootstrapK3s(shell: Shell): Promise<void> {
     "mkdir -p ~/.kube && sudo cat /etc/rancher/k3s/k3s.yaml > ~/.kube/scp-k3s-config && chmod 600 ~/.kube/scp-k3s-config"
   ]);
   shell.log(
-    "k3s installed. Re-run with --kube-context default --kubeconfig ~/.kube/scp-k3s-config " +
-      "(or merge it into your usual kubeconfig) if this shell's KUBECONFIG doesn't already see it."
+    "k3s installed. `scp install` has no --kubeconfig flag (only --kube-context, which selects a " +
+      "context WITHIN whatever KUBECONFIG already resolves) — re-run with " +
+      "KUBECONFIG=~/.kube/scp-k3s-config prepended (or merge scp-k3s-config into your usual " +
+      "kubeconfig) if this shell's KUBECONFIG doesn't already see the k3s context."
   );
 }
 
@@ -524,6 +544,19 @@ export async function runInstall(
     `role: ${opts.role}  profile: ${opts.profile}  mode: ${opts.mode}` +
       (opts.mode === "kube" ? `  stack: ${desired.length ? desired.join(", ") : "(none)"}` : "")
   );
+  // #422 review fix (SHOULD-FIX 7) — print the ACTUAL target before doing anything to it, even
+  // under --yes (which only skips the interactive backend checklist, never this). `opts.kubeContext`
+  // is resolved exactly ONCE, right here in the log line, and is the SAME value every kubectl/helm
+  // call below is given (a real context change never happens mid-run) — this line is that value
+  // made visible, not a separate resolution.
+  if (opts.mode === "kube") {
+    shell.log(
+      `target: kube context '${opts.kubeContext ?? "(current context)"}', namespace ` +
+        `'${opts.namespace}', release '${opts.releaseName}'`
+    );
+  } else {
+    shell.log(`target: docker compose, project '${opts.releaseName}'`);
+  }
 
   if (opts.dryRun) {
     shell.log("--dry-run: not executing. Plan above is what would run.");
@@ -618,16 +651,18 @@ export async function runInstall(
       // installer is its own, only reader, with no read-back step needed at all.
       SCP_BOOTSTRAP_ADMIN_PASSWORD: randomOneTimePassword()
     };
-    await run(shell, "docker", [
-      "compose",
-      "-f",
-      composeFile,
-      "-p",
-      opts.releaseName,
-      "up",
-      "-d",
-      "--build"
-    ]);
+    // #422 review fix (BLOCKING 1) — `env` above was built and then never threaded through: this
+    // call ran with the CALLER's shell environment, not `env`, so compose always installed a
+    // default eval commander (no matter --role/--profile/--org-name/--admin-username) with an
+    // UNKNOWN generated password (the one `finishLogin` below logs in with was never actually
+    // reaching the container) — login failed every time. Caught by a test asserting the exec
+    // call's `opts.env` reaches docker (install-cli.test.ts), not by inspection.
+    await run(
+      shell,
+      "docker",
+      ["compose", "-f", composeFile, "-p", opts.releaseName, "up", "-d", "--build"],
+      { env }
+    );
     shell.log(
       "mode compose: the Standard Stack (Argo CD/Workflows/Rollouts/Events) needs a Kubernetes " +
         "substrate and is NOT installed here (proposal §3a) — re-run with --mode kube (or " +
@@ -645,11 +680,41 @@ export async function runInstall(
     });
   }
 
-  const password = await readBootstrapAdminPassword(shell, {
-    context: opts.kubeContext,
-    namespace: opts.namespace,
-    releaseName: opts.releaseName
+  // #422 review fix (SHOULD-FIX 6) — RE-RUN DETECTION. A blanked Secret (redactSecretKey, after a
+  // prior successful install) reads back as "" — readSecretKey treats that as unreadable, so a
+  // re-run of `scp install` against an already-installed release used to retry for the FULL
+  // default budget and then THROW, aborting the whole command even though there is nothing wrong.
+  // Once the forced-password-change flow (SHOULD-FIX 3) ships, this is doubly true: even a
+  // Secret that somehow still held a value would be the WRONG one to log in with, because the
+  // real admin already changed their password. Probe SHORT here (the ordering race this retry
+  // loop exists for — a fresh install's pre-install-hook Secret vs. the api pod's readiness — is
+  // resolved within a couple of seconds when it is real; nothing this loop can wait for makes an
+  // intentionally-blanked Secret un-blank itself) and, if still unreadable, treat this as a
+  // successful re-run rather than a failure: skip login/stack-enable/HQ-declare (there is no
+  // credential to log in with) and say so.
+  const password = await readBootstrapAdminPassword(
+    shell,
+    { context: opts.kubeContext, namespace: opts.namespace, releaseName: opts.releaseName },
+    { attempts: 5, delayMs: 400 }
+  ).catch((err: unknown) => {
+    shell.log(
+      `no readable bootstrap-admin credential (${err instanceof Error ? err.message : String(err)}).\n` +
+        "This usually means the release is ALREADY installed and its one-time password was " +
+        "already consumed (a previous `scp install` run, or an operator's own first login). " +
+        "Nothing further to do here — run `scp login --base-url <url>` with your own credentials, " +
+        "or `scp whoami` if you are already logged in."
+    );
+    return null;
   });
+  if (password === null) {
+    return {
+      baseUrl: opts.baseUrl ?? "",
+      loggedInAs: "",
+      org: "",
+      stack: null,
+      hqOutpostDeclared: false
+    };
+  }
   shell.log(
     `bootstrap admin one-time password (shown once — not stored in plaintext): ${password}`
   );
@@ -677,19 +742,34 @@ export async function runInstall(
       desired,
       stackTimeoutSeconds: opts.stackTimeoutSeconds,
       afterLogin: async () => {
-        // "shown once, not stored in plaintext" (docs/adr/0060-front-door.md): the Secret's only
-        // job was getting the password from the chart to this process; once a real login has
-        // proven it round-tripped, there is nothing left for it to do. Blanked HERE — after login,
-        // not before — so a failed login leaves the password for a retry instead of stranding the
-        // operator. The KEY stays (see redactSecretKey's doc): removing the whole Secret object
-        // broke a later pod's startup on a real kind cluster (CreateContainerConfigError) the
-        // first time this command tried that.
-        await shell.redactSecretKey({
-          context: opts.kubeContext,
-          namespace: opts.namespace,
-          name: bootstrapAdminSecretName(opts.releaseName),
-          key: "password"
-        });
+        // "shown once, not stored in plaintext IN SCP'S OWN DATABASE" (docs/adr/0060-front-door.md
+        // §2 — the Secret's own plaintext-in-Helm-release-data limitation is separate, see §2's
+        // "GENERATED CREDENTIALS UNDER GitOps" note): the Secret's only job was getting the
+        // password from the chart to this process; once a real login has proven it round-tripped,
+        // there is nothing left for it to do. Blanked HERE — after login, not before — so a failed
+        // login leaves the password for a retry instead of stranding the operator. The KEY stays
+        // (see redactSecretKey's doc): removing the whole Secret object broke a later pod's
+        // startup on a real kind cluster (CreateContainerConfigError) the first time this command
+        // tried that.
+        //
+        // #422 review fix (SHOULD-FIX 9) — a FAILED redaction is reported LOUDLY (never silently
+        // swallowed) but does NOT abort the rest of the install: login already succeeded, and
+        // declaring the federation identity / enabling the stack / declaring the HQ outpost below
+        // are all independently worth completing even if this one cleanup step needs a manual
+        // follow-up.
+        try {
+          await shell.redactSecretKey({
+            context: opts.kubeContext,
+            namespace: opts.namespace,
+            name: bootstrapAdminSecretName(opts.releaseName),
+            key: "password"
+          });
+        } catch (err) {
+          shell.log(
+            `WARNING: ${err instanceof Error ? err.message : String(err)}\n` +
+              "Continuing the rest of the install — this does not affect login, the stack, or the HQ outpost."
+          );
+        }
       }
     });
   } finally {

@@ -2109,6 +2109,24 @@ export function buildProgram(): Command {
       });
     });
 
+  // #422 review fix (SHOULD-FIX 3) — the local-user password-change door: API (POST
+  // /auth/password) -> SDK (client.auth.changePassword) -> here -> UI (routes/change-password.tsx).
+  // This is what actually retires a bootstrap/one-time password: require-auth.ts refuses every
+  // OTHER door until this succeeds.
+  program
+    .command("passwd")
+    .description("Change your local-auth password (required first if one was ever set for you)")
+    .option("-c, --current-password <password>", "current password", process.env.SCP_PASSWORD)
+    .option("-n, --new-password <password>", "new password (min 12 characters)")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: BaseCliOpts & { currentPassword?: string; newPassword?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const currentPassword = opts.currentPassword ?? (await promptLine("Current password: "));
+      const newPassword = opts.newPassword ?? (await promptLine("New password (min 12 chars): "));
+      await client.auth.changePassword(currentPassword, newPassword);
+      console.log("Password changed.");
+    });
+
   // pat (Personal Access Tokens — BUILD_AND_TEST.md §8 M2 item 3)
   const patCmd = program.command("pat").description("Manage Personal Access Tokens");
 

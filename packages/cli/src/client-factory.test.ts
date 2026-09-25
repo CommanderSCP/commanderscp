@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-/** `clientFromStoredCredentials`'s base-URL precedence (M29.1) — the SAME `--base-url` >
- *  `$SCP_API_URL` > saved-config order `login-base-url.test.ts` already proves for `scp login`,
- *  extended here to every OTHER command. Found while writing scripts/scp-install-kind-drill.sh: `scp
- *  install`'s own port-forward closes when it exits, so a later `scp whoami` against a fresh one at
- *  a different port had no way to say so short of `--base-url` on every single command. */
+/** `clientFromStoredCredentials`'s base-URL precedence (M29.1, tightened by the #422 review's
+ *  SHOULD-FIX 5) — `--base-url` > `$SCP_API_URL` (same HOST as the saved session only) > the saved
+ *  config. Found while writing scripts/scp-install-kind-drill.sh: `scp install`'s own port-forward
+ *  closes when it exits, so a later `scp whoami` against a fresh one at a different PORT had no way
+ *  to say so short of `--base-url` on every single command — `$SCP_API_URL` fills that gap, but
+ *  ONLY within the same host: honouring it unconditionally let any ambient env var (not just this
+ *  drill's) decide where the stored session token gets sent, an M28-class hole. */
 
 const constructedOpts: { baseUrl: string; token?: string }[] = [];
 
@@ -21,7 +23,8 @@ vi.mock("@scp/sdk", () => {
 });
 
 const REMOTE = "http://saved.example.com/api/v1";
-const ENV_URL = "http://env.example.com/api/v1";
+const SAME_HOST_ENV_URL = "http://saved.example.com:9999/api/v1";
+const DIFFERENT_HOST_ENV_URL = "http://evil.example.com/api/v1";
 const FLAG_URL = "http://flag.example.com/api/v1";
 
 let configDir: string;
@@ -56,15 +59,23 @@ describe("clientFromStoredCredentials base URL precedence", () => {
     expect(constructedOpts).toEqual([{ baseUrl: REMOTE, token: "tok" }]);
   });
 
-  it("SCP_API_URL env overrides the saved config", async () => {
-    process.env.SCP_API_URL = ENV_URL;
+  it("SCP_API_URL env overrides the saved config when it names the SAME host (a reopened port-forward on a new port)", async () => {
+    process.env.SCP_API_URL = SAME_HOST_ENV_URL;
     const { clientFromStoredCredentials } = await import("./client-factory.js");
     await clientFromStoredCredentials({});
-    expect(constructedOpts).toEqual([{ baseUrl: ENV_URL, token: "tok" }]);
+    expect(constructedOpts).toEqual([{ baseUrl: SAME_HOST_ENV_URL, token: "tok" }]);
   });
 
-  it("--base-url overrides both the env and the saved config", async () => {
-    process.env.SCP_API_URL = ENV_URL;
+  it("MUTATION-CAUGHT: SCP_API_URL naming a DIFFERENT host is refused, not silently sent the stored token (#422 SHOULD-FIX 5, M28-class)", async () => {
+    process.env.SCP_API_URL = DIFFERENT_HOST_ENV_URL;
+    const { clientFromStoredCredentials } = await import("./client-factory.js");
+    await expect(clientFromStoredCredentials({})).rejects.toThrow(/different host/);
+    // and it must not have constructed a client pointed at the untrusted host along the way
+    expect(constructedOpts).toEqual([]);
+  });
+
+  it("--base-url overrides both a different-host env and the saved config (an explicit flag is consent; an ambient env var is not)", async () => {
+    process.env.SCP_API_URL = DIFFERENT_HOST_ENV_URL;
     const { clientFromStoredCredentials } = await import("./client-factory.js");
     await clientFromStoredCredentials({ baseUrl: FLAG_URL });
     expect(constructedOpts).toEqual([{ baseUrl: FLAG_URL, token: "tok" }]);
