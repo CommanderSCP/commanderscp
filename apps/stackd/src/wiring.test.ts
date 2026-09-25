@@ -284,8 +284,9 @@ describe("M29.2 the auto-wire (wiring.ts)", () => {
   it("Argo CD: egress first, then a scoped token minted, handed over, and only THEN the old tokens revoked", async () => {
     const r = rig();
     expect(await wire(r, "argocd")).toEqual([]);
-    const np = r.kube.find("NetworkPolicy", egressPolicyName("argocd"), SCP_NS)!;
-    expect(np["spec"]).toEqual({
+    const np = r.kube.find("NetworkPolicy", egressPolicyName("argocd"), SCP_NS);
+    expect(np, "the egress NetworkPolicy was not written into SCP's namespace").toBeDefined();
+    expect(np?.["spec"]).toEqual({
       podSelector: { matchLabels: POD_LABELS },
       policyTypes: ["Egress"],
       egress: [
@@ -368,9 +369,9 @@ describe("M29.2 the auto-wire (wiring.ts)", () => {
       account: "scp-coordinator",
       token: "SA-TOKEN-1"
     });
-    expect(req.caPem).toContain("BEGIN CERTIFICATE");
-    const np = r.kube.find("NetworkPolicy", egressPolicyName("argo-workflows"), SCP_NS)!;
-    expect(JSON.stringify(np["spec"])).toContain('"port":2746');
+    expect(req.caPem ?? "(no CA handed over)").toContain("BEGIN CERTIFICATE");
+    const np = r.kube.find("NetworkPolicy", egressPolicyName("argo-workflows"), SCP_NS);
+    expect(JSON.stringify(np?.["spec"] ?? "no egress policy")).toContain('"port":2746');
   });
 
   it("Argo Workflows rotation: a new certificate (argo-server rolled onto it) and a new token Secret", async () => {
