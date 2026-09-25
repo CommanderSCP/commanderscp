@@ -239,7 +239,9 @@ export function registerStackCredentialRoutes(app: FastifyInstance, deps: AppDep
     },
     handler: async (request, reply) => {
       await requireStackControllerCredential(deps, request);
-      const items = await withOperatorTx(deps.config, SURFACE, listPendingDeliveries);
+      const items = await withOperatorTx(deps.config, SURFACE, (client) =>
+        listPendingDeliveries(client)
+      );
       reply.status(200).send({ items });
     }
   });
