@@ -134,13 +134,24 @@ export async function buildControllerDeps(
     pollMs: 3_000,
     resyncMs: config.resyncMs,
     log: (line) => console.log(`[scp-stackd] ${line}`),
-    // M29.2 (ADR-0061): the auto-wire. Every ready backend is wired into SCP in the same reconcile;
-    // every disabled one is unwired before it is removed.
-    wiring: { http: nodeBackendHttp(), scpPodLabels: config.scpPodLabels },
-    afterReady: (backend, objects, ctx) => wireBackend(deps, backend, objects, ctx),
-    unwire: (backend, ctx) => unwireBackend(deps, backend, ctx),
     ...overrides
   };
+  return installWiringHooks(deps, { http: nodeBackendHttp(), scpPodLabels: config.scpPodLabels });
+}
+
+/**
+ * M29.2 (ADR-0061): the auto-wire. Every ready backend is wired into SCP in the same reconcile;
+ * every disabled one is unwired before it is removed. A hook an override already set is kept.
+ * (wiring.test.ts calls the installed hooks and watches the hand-off happen — a reference to
+ * `wireBackend` that is never called would pass a census, not that test.)
+ */
+export function installWiringHooks(
+  deps: ControllerDeps,
+  wiring: NonNullable<ControllerDeps["wiring"]>
+): ControllerDeps {
+  deps.wiring ??= wiring;
+  deps.afterReady ??= (backend, objects, ctx) => wireBackend(deps, backend, objects, ctx);
+  deps.unwire ??= (backend, ctx) => unwireBackend(deps, backend, ctx);
   return deps;
 }
 

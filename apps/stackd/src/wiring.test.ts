@@ -8,6 +8,7 @@ import type { ControllerDeps } from "./reconcile.js";
 import type { StackRelease } from "./release.js";
 import { StateStore } from "./state.js";
 import { FakeKube } from "./test-support/fake-kube.js";
+import { installWiringHooks } from "./controller.js";
 import {
   GITEA_TOKEN_SCOPES,
   backendEndpoint,
@@ -461,6 +462,8 @@ describe("M29.2 the auto-wire (wiring.ts)", () => {
   it("unwiring: scpd first, then the egress policy, then (if it was wired) the backend's tokens", async () => {
     const r = rig();
     await wire(r, "argocd");
+    // Unwiring reads the backend's Service live (it still runs), as the wiring derived it.
+    for (const o of RENDERS["argocd"]!) if (o.kind === "Service") r.kube.seed(o);
     r.events.length = 0;
     await unwireBackend(r.deps, "argocd", { wasWired: true });
     expect(r.events[0]).toBe("deleteWiring argocd");
@@ -482,5 +485,74 @@ describe("M29.2 the auto-wire (wiring.ts)", () => {
     expect(factsDigest("argocd", { ...f, serverUrl: "http://c.d.svc" })).not.toBe(d);
     expect(factsDigest("argocd", { ...f, caPem: "pem" })).not.toBe(d);
     expect(d).not.toBe(createHash("sha256").update("").digest("hex"));
+  });
+});
+
+describe("M29.2 review fixes", () => {
+  it("the controller's installed hooks CALL the wiring and the unwiring (not merely reference them)", async () => {
+    const r = rig();
+    installWiringHooks(r.deps, r.deps.wiring!);
+    expect(
+      await r.deps.afterReady!("argo-events", RENDERS["argo-events"]!, {
+        spec: spec("argo-events"),
+        recorded: undefined
+      })
+    ).toEqual([]);
+    expect(r.handoffs.map((h) => h.backend)).toEqual(["argo-events"]);
+    await r.deps.unwire!("argo-events", { wasWired: false });
+    expect(r.withdrawals).toEqual(["argo-events"]);
+  });
+
+  it("a hand-off whose RESPONSE failed after scpd stored it still revokes the old token on the next tick", async () => {
+    const r = rig();
+    const put = r.deps.api.putWiring;
+    let failOnce = true;
+    r.deps.api.putWiring = async (backend, req) => {
+      await put(backend, req); // scpd committed it ...
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("409 after commit"); // ... and the response was an error
+      }
+    };
+    const needs = await wire(r, "argocd");
+    expect(needs).toHaveLength(1);
+    expect(r.http.argoTokens).toContain("old-token-id"); // not revoked: the hand-off "failed"
+    const stored = r.handoffs[0]!.req;
+    // Next tick: scpd reports exactly the stored hand-off, so nothing is re-minted ...
+    expect(await wire(r, "argocd", 0, stored)).toEqual([]);
+    expect(r.http.minted).toBe(1);
+    // ... and the token it left valid is revoked now.
+    expect(r.http.argoTokens).not.toContain("old-token-id");
+    expect(r.http.argoTokens).toHaveLength(1);
+  });
+
+  it("a NAMED targetPort resolves to the selected container's port, and an unresolvable one throws", () => {
+    const r = rig();
+    const svc: KubeObject = {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: { name: "argocd-server", namespace: "scp-argocd" },
+      spec: {
+        selector: { app: "argocd-server" },
+        ports: [{ name: "http", port: 80, targetPort: "server" }]
+      }
+    };
+    const deploy = (portName: string): KubeObject => ({
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: { name: "argocd-server", namespace: "scp-argocd" },
+      spec: {
+        template: {
+          metadata: { labels: { app: "argocd-server" } },
+          spec: { containers: [{ name: "s", ports: [{ name: portName, containerPort: 8080 }] }] }
+        }
+      }
+    });
+    expect(backendEndpoint(r.deps.release, "argocd", [svc, deploy("server")])!.targetPort).toBe(
+      8080
+    );
+    expect(() => backendEndpoint(r.deps.release, "argocd", [svc, deploy("other")])).toThrow(
+      /named port 'server'/
+    );
   });
 });

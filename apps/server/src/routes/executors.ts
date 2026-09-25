@@ -88,18 +88,15 @@ const KNOWN_DISCOVERY_MODULES: PluginModule[] = [
   "argocd-discovery"
 ];
 
-/** M29.2 (ADR-0061): run-config keys a discovery against a Standard Stack registration never takes
- *  from the caller — each names an endpoint or a credential, which only the wiring decides. */
-const STACK_RUN_CONFIG_REFUSED = new Set([
-  "serverUrl",
-  "baseUrl",
-  "apiBaseUrl",
-  "url",
-  "token",
-  "tokenPlaintext",
-  "tokenSecretKey",
-  "namespace"
-]);
+/** M29.2 (ADR-0061): a discovery against a Standard Stack registration runs THAT backend's own
+ *  discovery module, and takes from the caller only the keys that say WHAT to read — an ALLOWLIST,
+ *  so no key that could name an endpoint or a credential (today's or a future plugin's) gets
+ *  through. Everything else comes from the wiring. A backend absent here has no discovery. */
+const STACK_DISCOVERY: Partial<Record<string, { module: string; callerKeys: readonly string[] }>> =
+  {
+    argocd: { module: "argocd-discovery", callerKeys: [] },
+    gitea: { module: "gitea-discovery", callerKeys: ["owner", "repo", "defaultWorkflowId"] }
+  };
 
 /** Bind a target object to a registered `execution-system`. See docs/routes.md §170. */
 async function bindTargetToExecutionSystem(
@@ -979,18 +976,28 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             allowInternalEgress?: boolean;
           };
           if (stack) {
-            // The caller's run config (owner/repo …) minus every key that could name an endpoint
-            // or a credential: a plugin's explicit `baseUrl` outranks `serverUrl` (gitea), so a
-            // caller-sent one would re-point the stack token — held back here, and by the egress
+            const own = STACK_DISCOVERY[stack.backend];
+            if (!own) {
+              throw badRequest(`the bundled ${stack.backend} has no discovery`);
+            }
+            if (request.body.pluginModule !== own.module) {
+              throw badRequest(
+                `'${sys.id}' is the bundled ${stack.backend}: a discovery against it runs '${own.module}', not '${request.body.pluginModule}'`
+              );
+            }
+            // Only the allowlisted keys of the caller's run config (owner/repo …): a plugin's
+            // explicit `baseUrl` outranks `serverUrl` (gitea), so any caller-sent endpoint or
+            // credential key would re-point the stack token — held back here, and by the egress
             // pin to the wiring's host underneath (M29.2, the M28 class).
+            const sent = (request.body.config as Record<string, unknown>) ?? {};
             const callerConfig = Object.fromEntries(
-              Object.entries((request.body.config as Record<string, unknown>) ?? {}).filter(
-                ([k]) => !STACK_RUN_CONFIG_REFUSED.has(k)
-              )
+              own.callerKeys.filter((k) => k in sent).map((k) => [k, sent[k]])
             );
             effectiveConfig = {
               ...callerConfig,
-              // Server-governed — these WIN over anything the caller sent.
+              // Server-governed — these WIN over anything the caller sent. The system id is the
+              // one just resolved (argocd-discovery proposes bindings to it), never the caller's.
+              executionSystemId: sys.id,
               ...stack.config
             };
             stackSecrets = stack.secrets;
@@ -1038,9 +1045,13 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             effectiveSecretRefs,
             deps.config.secretsMasterKey
           ));
+        // THE HOST'S INSTANCE ID IS THE SERVER'S, namespaced by org: the host keys instances
+        // globally, so a caller-chosen id shared by two orgs would let one org's run respawn — or
+        // run under — the other's config and token (M29.2 review).
+        const instanceId = `discovery:${auth.orgId}:${request.body.pluginInstanceId}`;
         await host.start([
           {
-            id: request.body.pluginInstanceId,
+            id: instanceId,
             module: request.body.pluginModule as PluginModule,
             orgId: auth.orgId,
             scopeKey: "default",
@@ -1051,7 +1062,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             ...(trustedCaPem ? { trustedCaPem } : {})
           }
         ]);
-        return host.discovery(request.body.pluginInstanceId).discover();
+        return host.discovery(instanceId).discover();
       });
       reply.status(200).send(proposal);
     }

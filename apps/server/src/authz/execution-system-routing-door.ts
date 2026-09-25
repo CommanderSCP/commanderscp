@@ -101,7 +101,7 @@ export async function assertStackRegistrationWrite(
     typeId: string;
     objectId: string | undefined;
     stackManagedWrite: boolean | undefined;
-    act: "create" | "update" | "delete";
+    act: "create" | "update" | "delete" | "publish";
     subject: string;
   }
 ): Promise<void> {
@@ -121,7 +121,8 @@ export async function assertStackRegistrationWrite(
     }
     return;
   }
-  if (args.stackManagedWrite && args.act !== "delete") return;
+  // The stack creates and updates its own registrations; nothing deletes or publishes one.
+  if (args.stackManagedWrite && (args.act === "create" || args.act === "update")) return;
   throw conflict(
     `cannot ${args.act} ${args.subject}: it is the Standard Stack's registration of the bundled ` +
       `${backend}, whose endpoint, TLS trust, credential and egress are set by the stack controller ` +

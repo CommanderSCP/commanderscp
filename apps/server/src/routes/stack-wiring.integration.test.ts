@@ -179,8 +179,15 @@ describe("M29.2 the Standard Stack wires its backends into SCP (Testcontainers, 
     ).toBe(400);
     // A backend an operator has disabled is not wired, whatever the controller says.
     expect(
-      (await apiError(() => controller.stack.putWiring("gitea", argocdWiring(), STACKD_TOKEN)))
-        .status
+      (
+        await apiError(() =>
+          controller.stack.putWiring(
+            "gitea",
+            argocdWiring({ serverUrl: "http://scp-gitea-http.scp-gitea.svc:3000" }),
+            STACKD_TOKEN
+          )
+        )
+      ).status
     ).toBe(409);
   });
 
@@ -398,13 +405,31 @@ describe("M29.2 the Standard Stack wires its backends into SCP (Testcontainers, 
           baseUrl: "http://evil.attacker.svc",
           serverUrl: "http://evil.attacker.svc",
           token: "tenant-chosen",
-          tokenSecretKey: "mine"
+          tokenSecretKey: "mine",
+          // Not on the denylist the first cut used — an ALLOWLIST drops it anyway.
+          privateKeySecretKey: STACK_TOKEN_SECRET_FIELD
         }
       });
+      // A different module against the registration is refused, not run with the stack token.
+      const wrongModule = await apiError(() =>
+        tenant.discovery.run({
+          pluginModule: "github-discovery",
+          pluginInstanceId: "wiring-discovery-probe",
+          config: { executionSystemId: sysId, owner: "x", repo: "y" }
+        } as never)
+      );
+      expect(wrongModule.status).toBe(400);
+      expect(wrongModule.problem?.detail).toMatch(/runs 'argocd-discovery'/);
     } finally {
       server.deps.pluginHost = previous;
     }
     expect(started).toHaveLength(1);
+    // The host's instance id is the server's, namespaced by org: the same caller id from another
+    // org is another instance, never this one's config and token.
+    expect((started[0] as { id: string }).id).toBe(
+      `discovery:${bootstrap.orgId}:wiring-discovery-probe`
+    );
+    expect((started[0] as { config: object }).config).not.toHaveProperty("privateKeySecretKey");
     const inst = started[0] as {
       config: Record<string, unknown>;
       secrets: Record<string, string>;
@@ -433,6 +458,19 @@ describe("M29.2 the Standard Stack wires its backends into SCP (Testcontainers, 
     // An org cannot serve itself: the door needs instance authority.
     expect((await apiError(() => otherTenant.stack.attachOrg(other.orgId))).status).toBe(403);
 
+    // ONE SERVED ORG UNTIL M29.6 (owner decision 2026-09-25): the backends' accounts are shared,
+    // so a second org is refused with the reason, and nothing is registered there.
+    const refused = await apiError(() =>
+      tenant.stack.attachOrg(other.orgId, BOOTSTRAP_OPERATOR_TOKEN)
+    );
+    expect(refused.status).toBe(409);
+    expect(refused.problem?.detail).toMatch(/M29\.6/);
+    expect(refused.problem?.detail).toMatch(/same Argo CD account and Gitea identity/);
+    expect(await registrationIdIn(other.orgId, "argocd")).toBeUndefined();
+    expect((await view(otherTenant)).servesThisOrg).toBe(false);
+
+    // MOVING the stack is allowed: detach the served org, then serve the other.
+    await tenant.stack.detachOrg(bootstrap.orgId, BOOTSTRAP_OPERATOR_TOKEN);
     await tenant.stack.attachOrg(other.orgId, BOOTSTRAP_OPERATOR_TOKEN);
     const sysId = await registrationIdIn(other.orgId, "argocd");
     expect(sysId).toBeDefined();
@@ -451,6 +489,7 @@ describe("M29.2 the Standard Stack wires its backends into SCP (Testcontainers, 
       tx.execute(sql`SELECT backend FROM stack_backend_tokens`)
     );
     expect(after.rows).toHaveLength(0);
+    await tenant.stack.attachOrg(bootstrap.orgId, BOOTSTRAP_OPERATOR_TOKEN);
   });
 
   it("rotation is an audited operator request the controller sees as a counter; the next hand-off satisfies it", async () => {
@@ -515,6 +554,94 @@ describe("M29.2 the Standard Stack wires its backends into SCP (Testcontainers, 
         await client.query("ROLLBACK");
         client.release();
       }
+    }
+  });
+
+  // ---- M29.2 review (the #423 adversarial pass) -------------------------------------------------
+
+  it("the wiring URL is PINNED to the backend's own Service — another in-cluster Service is refused", async () => {
+    for (const [backend, bad] of [
+      ["argocd", argocdWiring({ serverUrl: "http://argo-server.scp-argo-workflows.svc" })],
+      ["argocd", argocdWiring({ serverUrl: "http://argocd-server.tenant-ns.svc" })],
+      ["argocd", argocdWiring({ serverUrl: "https://argocd-server.scp-argocd.svc" })],
+      [
+        "argo-workflows",
+        argocdWiring({ serverUrl: WORKFLOWS_URL, namespace: "tenant-ns", caPem: ca.certPem })
+      ]
+    ] as const) {
+      const e = await apiError(() => controller.stack.putWiring(backend, bad, STACKD_TOKEN));
+      expect(e.status, JSON.stringify(bad)).toBe(400);
+      expect(e.problem?.detail, JSON.stringify(bad)).toMatch(
+        /must name its own Service|namespace is the bundled one/
+      );
+    }
+  });
+
+  it("a Standard Stack registration cannot be PUBLISHED — it would journal the in-cluster endpoint to peers", async () => {
+    await controller.stack.putWiring("argocd", argocdWiring(), STACKD_TOKEN);
+    const id = (await registrationIdIn(bootstrap.orgId, "argocd"))!;
+    const e = await apiError(() => tenant.object("execution-system").publish(id));
+    expect(e.status).toBe(409);
+    expect(e.problem?.detail).toMatch(/Standard Stack's registration/);
+    const row = await admin.query("SELECT domain_local FROM objects WHERE id = $1", [id]);
+    expect(row.rows[0].domain_local).toBe(true);
+  });
+
+  it("one org's registration that cannot converge neither fails the hand-off nor stops another org converging", async () => {
+    await controller.stack.putWiring("argocd", argocdWiring(), STACKD_TOKEN);
+    // Two served orgs — a state the attach door now refuses to create, seeded directly: the
+    // reconcile must isolate orgs whatever the door allows.
+    await admin.query(
+      "INSERT INTO stack_served_orgs (org_id, attached_by) VALUES ($1, '{}') ON CONFLICT DO NOTHING",
+      [other.orgId]
+    );
+    await controller.stack.putWiring(
+      "argocd",
+      argocdWiring({ factsSha256: sha("iso-1") }),
+      STACKD_TOKEN
+    );
+    // The reconcile visits orgs in id order: wedge the FIRST, watch the second.
+    const [first, second] = [bootstrap.orgId, other.orgId].sort();
+    const wedged = (await registrationIdIn(first!, "argocd"))!;
+    const healthy = (await registrationIdIn(second!, "argocd"))!;
+    await admin.query("UPDATE objects SET deleted_at = now() WHERE id = $1", [wedged]);
+    await admin.query(
+      `UPDATE objects SET properties = jsonb_set(properties, '{serverUrl}', '"http://drift.x.svc"') WHERE id = $1`,
+      [healthy]
+    );
+    try {
+      // A rotation hand-off: the controller revokes the old token on this success, so it must
+      // succeed once the token is stored, whatever registering does afterwards.
+      await controller.stack.putWiring(
+        "argocd",
+        argocdWiring({ token: "after-wedge", factsSha256: sha("iso-2") }),
+        STACKD_TOKEN
+      );
+      const stored = await admin.query(
+        "SELECT facts_sha256 FROM stack_backend_wirings WHERE backend = 'argocd'"
+      );
+      expect(stored.rows[0].facts_sha256).toBe(sha("iso-2"));
+      const props = await admin.query("SELECT properties FROM objects WHERE id = $1", [healthy]);
+      expect(props.rows[0].properties.serverUrl).toBe(ARGOCD_URL);
+    } finally {
+      await admin.query("UPDATE objects SET deleted_at = NULL WHERE id = $1", [wedged]);
+      await admin.query("DELETE FROM stack_served_orgs WHERE org_id = $1", [other.orgId]);
+    }
+  });
+
+  it("an attach that COMMITTED reports success even when that org's registration cannot converge", async () => {
+    await controller.stack.putWiring("argocd", argocdWiring(), STACKD_TOKEN);
+    // `other` holds a registration (from the move above) whose object is wedged.
+    const wedged = (await registrationIdIn(other.orgId, "argocd"))!;
+    await admin.query("UPDATE objects SET deleted_at = now() WHERE id = $1", [wedged]);
+    await tenant.stack.detachOrg(bootstrap.orgId, BOOTSTRAP_OPERATOR_TOKEN);
+    try {
+      const served = await tenant.stack.attachOrg(other.orgId, BOOTSTRAP_OPERATOR_TOKEN);
+      expect(JSON.stringify(served)).toContain(other.orgId);
+    } finally {
+      await admin.query("UPDATE objects SET deleted_at = NULL WHERE id = $1", [wedged]);
+      await admin.query("DELETE FROM stack_served_orgs WHERE org_id = $1", [other.orgId]);
+      await tenant.stack.attachOrg(bootstrap.orgId, BOOTSTRAP_OPERATOR_TOKEN);
     }
   });
 });

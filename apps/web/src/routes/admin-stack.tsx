@@ -368,9 +368,9 @@ function ServedOrgs({
         <div>
           <h2 className="text-sm font-semibold text-slate-900">Organizations served</h2>
           <p className="text-xs text-slate-500">
-            Every wired backend is registered in each of these as an execution system. They all
-            drive the SAME scoped backend accounts, so serving another organization gives its
-            tenants reach into what the others run there.
+            Every wired backend is registered here as an execution system. The backends' accounts
+            are shared, so one organization is served at a time until per-organization isolation
+            (M29.6) lands: to move the stack, stop serving this one first.
           </p>
         </div>
         {orgs.isError ? (

@@ -2,7 +2,11 @@ import { createHash, X509Certificate } from "node:crypto";
 import type pg from "pg";
 import { sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import type { InstanceActor, PutStackWiringRequest } from "@scp/schemas";
+import {
+  STACK_BACKEND_SERVICES,
+  type InstanceActor,
+  type PutStackWiringRequest
+} from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { withTenantTx } from "../db/tenant-tx.js";
@@ -88,11 +92,32 @@ export function validateWiring(backend: WireableBackend, body: PutStackWiringReq
       throw badRequest("caPem is not a PEM certificate");
     }
   }
+  const pin = (
+    STACK_BACKEND_SERVICES as Record<
+      string,
+      { service: string; namespace: string; scheme: string } | undefined
+    >
+  )[backend];
   if (body.serverUrl !== null) {
     const url = new URL(body.serverUrl);
     if (url.protocol === "http:" && body.caPem !== null) {
       throw badRequest("a CA was handed over for a plain-http endpoint");
     }
+    // PINNED to the backend's own Service: the pattern admits any in-cluster Service, this admits one.
+    const host = `${pin!.service}.${pin!.namespace}.svc`;
+    if (
+      (url.hostname !== host && url.hostname !== `${host}.cluster.local`) ||
+      url.protocol !== `${pin!.scheme}:`
+    ) {
+      throw badRequest(
+        `a ${backend} wiring must name its own Service (${pin!.scheme}://${host}), not ${url.protocol}//${url.hostname}`
+      );
+    }
+  }
+  if (backend === "argo-workflows" && body.namespace !== pin!.namespace) {
+    throw badRequest(
+      `an argo-workflows wiring's namespace is the bundled one (${pin!.namespace}), where its workflows run`
+    );
   }
 }
 
@@ -278,6 +303,25 @@ export async function attachServedOrg(
 ): Promise<void> {
   const org = await client.query("SELECT 1 FROM orgs WHERE id = $1", [input.orgId]);
   if (org.rows.length === 0) throw badRequest(`no organization '${input.orgId}'`);
+  // ONE SERVED ORG UNTIL M29.6 (owner decision 2026-09-25, ADR-0061 §4). Every served org drives
+  // the SAME backend accounts (one Argo CD account, one Gitea identity), so a second org would read
+  // and write the first org's Applications and repositories through SCP. Per-org isolation (an
+  // Argo CD AppProject + account and a non-admin Gitea user/organization per org) is M29.6's; until
+  // it lands a second org is refused, and the operator can only MOVE the stack to another org.
+  const others = await client.query<{ org_id: string }>(
+    "SELECT org_id FROM stack_served_orgs WHERE org_id <> $1 LIMIT 1",
+    [input.orgId]
+  );
+  if (others.rows[0]) {
+    throw conflict(
+      `the Standard Stack already serves organization '${others.rows[0].org_id}', and its bundled ` +
+        `backends are shared: every served organization would drive the same Argo CD account and ` +
+        `Gitea identity, so one organization could read and change another's Applications and ` +
+        `repositories. Serving a second organization is refused until per-organization isolation ` +
+        `lands (M29.6: an Argo CD AppProject and account, and a non-admin Gitea user and ` +
+        `organization, per org). To move the stack, detach '${others.rows[0].org_id}' first (ADR-0061 §4).`
+    );
+  }
   const inserted = await client.query(
     `INSERT INTO stack_served_orgs (org_id, attached_by) VALUES ($1, $2::jsonb)
      ON CONFLICT (org_id) DO NOTHING`,
@@ -405,15 +449,22 @@ async function upsertRegisteredObject(
  * — called after every hand-off, attach and detach, and on every controller status report, so an org
  * served (or re-created) between hand-offs converges on the next tick.
  */
+/** One registration that did not converge — reported, never thrown, so one org cannot stop another. */
+export interface RegistrationNeed {
+  orgId: string;
+  backend: WireableBackend;
+  detail: string;
+}
+
 export async function reconcileStackRegistrations(
   deps: AppDeps,
   requestId: string,
   actor: InstanceActor
-): Promise<{ changed: number }> {
+): Promise<{ changed: number; needs: RegistrationNeed[] }> {
   const plan = await withOperatorTx(deps.config, "the Standard Stack", async (client) => {
     const wirings = await readWiringsOnClient(client);
     const served = (
-      await client.query<{ org_id: string }>("SELECT org_id FROM stack_served_orgs")
+      await client.query<{ org_id: string }>("SELECT org_id FROM stack_served_orgs ORDER BY org_id")
     ).rows.map((r) => r.org_id);
     const out: { orgId: string; wiring: Wiring; objectId: string }[] = [];
     for (const orgId of served) {
@@ -442,17 +493,37 @@ export async function reconcileStackRegistrations(
     return out;
   });
   let changed = 0;
+  const needs: RegistrationNeed[] = [];
   for (const { orgId, wiring, objectId } of plan) {
-    const outcome = await withTenantTx(deps.db, orgId, (tx) =>
-      upsertRegisteredObject(tx, {
-        orgId,
-        objectId,
-        backend: wiring.backend,
-        properties: registrationProperties(wiring.backend, wiring),
-        requestId
-      })
-    );
-    if (outcome !== "unchanged") changed += 1;
+    // PER (ORG, BACKEND), ISOLATED: each in its own tenant tx, and a failure is a need, not an
+    // exception — a wedged registration in one org must not stop the others converging, nor turn
+    // the hand-off that stored a new token into an error (the controller revokes the old token
+    // only once the hand-off succeeds).
+    try {
+      const outcome = await withTenantTx(deps.db, orgId, (tx) =>
+        upsertRegisteredObject(tx, {
+          orgId,
+          objectId,
+          backend: wiring.backend,
+          properties: registrationProperties(wiring.backend, wiring),
+          requestId
+        })
+      );
+      if (outcome !== "unchanged") changed += 1;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      needs.push({ orgId, backend: wiring.backend, detail });
+      console.error(
+        JSON.stringify({
+          level: "error",
+          msg: "stack: a registration did not converge",
+          orgId,
+          backend: wiring.backend,
+          detail,
+          requestId
+        })
+      );
+    }
   }
-  return { changed };
+  return { changed, needs };
 }

@@ -2644,7 +2644,7 @@ export const detachStackServedOrg = <ThrowOnError extends boolean = false>(optio
 });
 
 /**
- * Serve another organization with the Standard Stack: every wired backend is registered there. Its tenants then drive the same scoped backend accounts as every other served org — an instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0061)
+ * Serve an organization with the Standard Stack: every wired backend is registered there. Until M29.6 builds per-organization isolation on the shared backends, ONE organization is served at a time — a second is refused (409); detach the served one first to move the stack. An instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0061)
  */
 export const attachStackServedOrg = <ThrowOnError extends boolean = false>(options: Options<AttachStackServedOrgData, ThrowOnError>): RequestResult<AttachStackServedOrgResponses, AttachStackServedOrgErrors, ThrowOnError> => (options.client ?? client).put<AttachStackServedOrgResponses, AttachStackServedOrgErrors, ThrowOnError>({
     responseValidator: async (data) => await zAttachStackServedOrgResponse.parseAsync(data),

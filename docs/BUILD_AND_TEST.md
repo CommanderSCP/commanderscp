@@ -2232,6 +2232,11 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
         beside by a fixture and the controller's egress policy is asserted as an object (and against the real render in
         helm-verify), not enforced end to end. Argo Events' INBOUND wiring (its sensors calling SCP) is an open owner
         question (ADR-0061). The full chart with the real `scp-stackd` and scpd images in-cluster was not re-run.
+      - **ONE served org until M29.6 (owner decision 2026-09-25).** Every served org would drive the same Argo CD
+        account and the Gitea site admin's token, so attaching a second org is refused (409) until M29.6 builds
+        per-org isolation (an Argo CD AppProject + account and a non-admin Gitea user/organization per org). The
+        Gitea identity is still the site admin's in M29.2: a non-admin user is useful only with M29.6's per-org
+        Gitea organization.
   - **M29.3 — canary out of the box.** The authoring carrier is served from the bundled Gitea, and the dedicated AppProject
     is created when Rollouts is enabled. Argo Rollouts is installed into every registered target cluster through an
     authored Argo CD Application.
@@ -2291,7 +2296,9 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
       audit payload (asserted by scanning for the plaintext). There is no read route (census).
   - **M29.6 — role stacks.** The outpost and retrans profiles (proposal §5); **the air-gapped single-node k3s bootstrap
     for `scp install --bundle` on a machine with no cluster** (M29.1 refuses it with instructions for now, and it is carried
-    here so it is not lost); and import-and-take-over for existing Argo CD,
+    here so it is not lost); **multi-org isolation on the shared bundled backends** — a per-org Argo CD AppProject and
+    account, and a per-org non-admin Gitea user and organization — after which the Standard Stack may serve more than
+    one org (owner decision 2026-09-25; M29.2 refuses a second until then); and import-and-take-over for existing Argo CD,
     Gitea, Harbor, GitLab and GitHub (D5: configuration takeover by default, lifecycle adoption only for recognised
     installs).
     - **DoD:** an outpost install gets exactly its profile; importing a pre-existing Argo CD yields a registered, configured

@@ -203,6 +203,19 @@ export const STACK_WIRING_URL_PATTERN =
   /^https?:\/\/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?$/;
 
 /**
+ * WHERE EACH CALLED BACKEND'S API IS — its Service and namespace in the bundled chart
+ * (deploy/helm-bundled; the namespaces are the chart's own defaults, not operator values). scpd
+ * refuses a wiring naming any other host, so even the controller's credential cannot point a
+ * registration at a different Service; the controller derives its endpoint from the same pin and
+ * fails if its render disagrees.
+ */
+export const STACK_BACKEND_SERVICES = {
+  argocd: { service: "argocd-server", namespace: "scp-argocd", scheme: "http" },
+  "argo-workflows": { service: "argo-server", namespace: "scp-argo-workflows", scheme: "https" },
+  gitea: { service: "scp-gitea-http", namespace: "scp-gitea", scheme: "http" }
+} as const;
+
+/**
  * The controller's hand-off after a backend is healthy (`PUT /instance/stack/backends/{b}/wiring`,
  * the controller's credential ONLY). Every value is one the controller derived from ITS OWN render
  * and the backend it just installed — the endpoint, the CA the endpoint's certificate chains to, the

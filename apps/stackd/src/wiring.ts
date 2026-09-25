@@ -7,6 +7,7 @@ import type {
   StackNeed,
   StackWireableBackend
 } from "@scp/schemas";
+import { STACK_BACKEND_SERVICES } from "@scp/schemas";
 import type { BackendHttp } from "./backend-http.js";
 import type { KubeObject, ObjectRef } from "./manifests.js";
 import { checkReadiness } from "./readiness.js";
@@ -55,11 +56,14 @@ export const isWireable = (b: StackBackend): b is WireableBackend =>
   (WIREABLE as readonly string[]).includes(b);
 
 /** Where to find each called backend's API in its render. */
-const SERVICE: Partial<Record<WireableBackend, { name: string; scheme: "http" | "https" }>> = {
-  argocd: { name: "argocd-server", scheme: "http" },
-  "argo-workflows": { name: "argo-server", scheme: "https" },
-  gitea: { name: "scp-gitea-http", scheme: "http" }
-};
+const SERVICE: Partial<
+  Record<WireableBackend, { name: string; namespace: string; scheme: "http" | "https" }>
+> = Object.fromEntries(
+  Object.entries(STACK_BACKEND_SERVICES).map(([b, s]) => [
+    b,
+    { name: s.service, namespace: s.namespace, scheme: s.scheme }
+  ])
+);
 
 export interface BackendEndpoint {
   serverUrl: string;
@@ -80,6 +84,11 @@ export function backendEndpoint(
   const svc = SERVICE[backend];
   if (!svc) return null;
   const namespace = backendNamespace(release, backend);
+  if (namespace !== svc.namespace) {
+    throw new Error(
+      `the chart puts ${backend} in ${namespace}, but scpd admits a ${backend} wiring only in ${svc.namespace} (STACK_BACKEND_SERVICES)`
+    );
+  }
   const obj = objects.find(
     (o) =>
       o.kind === "Service" &&
@@ -88,27 +97,77 @@ export function backendEndpoint(
       o.metadata.namespace === namespace
   );
   if (!obj) throw new Error(`the render of ${backend} has no Service ${namespace}/${svc.name}`);
-  const spec = obj["spec"] as
-    | {
-        ports?: { name?: string; port?: number; targetPort?: number | string | null }[];
-        selector?: Record<string, string>;
-      }
-    | undefined;
-  const port = spec?.ports?.find((p) => p.name === "http") ?? spec?.ports?.[0];
-  if (!port?.port) throw new Error(`Service ${namespace}/${svc.name} renders no port`);
-  const selector = spec?.selector ?? {};
+  const { serverUrl, port, selector } = serviceFacts(backend, obj);
   if (Object.keys(selector).length === 0) {
     throw new Error(`Service ${namespace}/${svc.name} renders no selector`);
   }
-  const target = typeof port.targetPort === "number" ? port.targetPort : port.port;
-  const defaultPort = svc.scheme === "http" ? 80 : 443;
   return {
-    serverUrl: `${svc.scheme}://${svc.name}.${namespace}.svc${port.port === defaultPort ? "" : `:${port.port}`}`,
+    serverUrl,
     namespace,
     service: svc.name,
     podSelector: selector,
-    targetPort: target
+    targetPort: resolveTargetPort(objects, namespace, svc.name, port, selector)
   };
+}
+
+type ServicePort = { name?: string; port?: number; targetPort?: number | string | null };
+
+/** The in-cluster URL of a backend's Service — from the Service object itself, rendered or live. */
+function serviceFacts(
+  backend: WireableBackend,
+  obj: KubeObject
+): { serverUrl: string; port: ServicePort & { port: number }; selector: Record<string, string> } {
+  const svc = SERVICE[backend]!;
+  const namespace = obj.metadata.namespace;
+  const spec = obj["spec"] as
+    { ports?: ServicePort[]; selector?: Record<string, string> } | undefined;
+  const port = spec?.ports?.find((p) => p.name === "http") ?? spec?.ports?.[0];
+  if (!port?.port) throw new Error(`Service ${namespace}/${svc.name} renders no port`);
+  const defaultPort = svc.scheme === "http" ? 80 : 443;
+  return {
+    serverUrl: `${svc.scheme}://${svc.name}.${namespace}.svc${port.port === defaultPort ? "" : `:${port.port}`}`,
+    port: { ...port, port: port.port },
+    selector: spec?.selector ?? {}
+  };
+}
+
+/** The port the selected pods listen on — what the NetworkPolicy must open (it applies after DNAT).
+ *  A NAMED targetPort is resolved against the container ports of the workload the Service selects;
+ *  one that resolves to nothing throws rather than opening a guessed port. */
+function resolveTargetPort(
+  objects: KubeObject[],
+  namespace: string,
+  service: string,
+  port: ServicePort & { port: number },
+  selector: Record<string, string>
+): number {
+  const t = port.targetPort;
+  if (typeof t === "number") return t;
+  if (t === undefined || t === null || t === "") return port.port;
+  if (/^\d+$/.test(t)) return Number(t);
+  for (const o of objects) {
+    if (o.metadata.namespace !== namespace) continue;
+    if (!["Deployment", "StatefulSet", "DaemonSet"].includes(o.kind)) continue;
+    const tpl = (
+      o["spec"] as
+        | {
+            template?: {
+              metadata?: { labels?: Record<string, string> };
+              spec?: { containers?: { ports?: { name?: string; containerPort?: number }[] }[] };
+            };
+          }
+        | undefined
+    )?.template;
+    const labels = tpl?.metadata?.labels ?? {};
+    if (!Object.entries(selector).every(([k, v]) => labels[k] === v)) continue;
+    for (const c of tpl?.spec?.containers ?? []) {
+      const hit = c.ports?.find((p) => p.name === t);
+      if (hit?.containerPort) return hit.containerPort;
+    }
+  }
+  throw new Error(
+    `Service ${namespace}/${service} targets the named port '${t}', which no container of the workload it selects declares`
+  );
 }
 
 /** The NetworkPolicy that lets scpd's pods reach one backend — the network half of egress. */
@@ -550,6 +609,21 @@ async function rotateArgoWorkflows(
 
 // ---- the reconcile's two hooks ---------------------------------------------------------------------
 
+/** A minted token whose hand-off returned an error. scpd may still have stored it (the error came
+ *  after its commit); if the next tick finds scpd holding exactly this hand-off, the old tokens are
+ *  revoked then — revocation depends only on the new token being stored, never on the response. */
+interface PendingRevocation {
+  factsSha256: string;
+  rotationGeneration: number;
+  revokeOthers: () => Promise<void>;
+}
+const pendingRevocations = new WeakMap<object, Map<WireableBackend, PendingRevocation>>();
+function pendingFor(wiring: object): Map<WireableBackend, PendingRevocation> {
+  let m = pendingRevocations.get(wiring);
+  if (!m) pendingRevocations.set(wiring, (m = new Map()));
+  return m;
+}
+
 export interface WiringContext {
   spec: StackBackendSpec;
   /** What scpd holds of this backend's wiring (a hash and a counter), if anything. */
@@ -582,6 +656,19 @@ export async function wireBackend(
       await rotateArgoWorkflows(deps, objects, rotation);
     let facts = await gatherFacts(deps, backend, ep);
     const digest = factsDigest(backend, facts);
+    const pending = pendingFor(wiring);
+    const held = pending.get(backend);
+    if (
+      held &&
+      recorded &&
+      recorded.factsSha256 === held.factsSha256 &&
+      (recorded.rotationGeneration ?? 0) === held.rotationGeneration
+    ) {
+      // scpd stored the hand-off whose response failed: that token is the live one.
+      pending.delete(backend);
+      await held.revokeOthers();
+      deps.log(`${backend}: revoked the tokens an interrupted hand-off left valid`);
+    }
     if (recorded && recorded.factsSha256 === digest && !rotating) return [];
 
     let minted: Minted = { token: null, revokeOthers: async () => undefined };
@@ -606,7 +693,17 @@ export async function wireBackend(
       factsSha256: factsDigest(backend, facts),
       rotationGeneration: rotation
     };
-    await deps.api.putWiring(backend, body);
+    try {
+      await deps.api.putWiring(backend, body);
+    } catch (err) {
+      pending.set(backend, {
+        factsSha256: body.factsSha256,
+        rotationGeneration: rotation,
+        revokeOthers: minted.revokeOthers
+      });
+      throw err;
+    }
+    pending.delete(backend);
     await minted.revokeOthers();
     deps.log(`${backend}: wired into SCP (${facts.serverUrl ?? "registered, not called"})`);
     return [];
@@ -652,11 +749,16 @@ export async function unwireBackend(
     try {
       const ns = backendNamespace(deps.release, backend);
       const svc = SERVICE[backend]!;
+      // The SAME derivation as the wiring: from the Service, read live (it is still running).
+      const live = await deps.kube.get({
+        apiVersion: "v1",
+        kind: "Service",
+        name: svc.name,
+        namespace: ns
+      });
+      if (!live) throw new Error(`Service ${ns}/${svc.name} is already gone`);
       const ep: BackendEndpoint = {
-        serverUrl:
-          backend === "argocd"
-            ? `http://${svc.name}.${ns}.svc`
-            : `http://${svc.name}.${ns}.svc:3000`,
+        serverUrl: serviceFacts(backend, live).serverUrl,
         namespace: ns,
         service: svc.name,
         podSelector: {},

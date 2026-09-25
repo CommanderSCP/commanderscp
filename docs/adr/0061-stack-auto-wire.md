@@ -28,8 +28,10 @@ quietly.
       post-DNAT destination); applied *before* the hand-off;
    3. **the scoped token, minted on the backend** — Argo CD: an apiKey token for `scp-coordinator`
       via the admin session (initial-admin secret); Gitea: a `write:repository` + `write:package`
-      token for the admin account; Argo Workflows: the `scp-coordinator` ServiceAccount's bound
-      token (argo-server runs `--auth-mode=client`);
+      token **for the Gitea site-admin account** (`gitea-admin-secret`) — scope-limited, but the
+      identity is the site admin's, so it reaches every repository on the instance (see §7); Argo
+      Workflows: the `scp-coordinator` ServiceAccount's bound token (argo-server runs
+      `--auth-mode=client`);
    4. **the CA** the endpoint's certificate chains to (argo-server's controller-minted certificate;
       Argo CD and Gitea are plain in-cluster HTTP behind their NetworkPolicies);
    5. **the hand-off**, `PUT /instance/stack/backends/{b}/wiring`, a door ONLY the controller's
@@ -82,20 +84,33 @@ quietly.
    Gitea plugin); the egress pin to the wiring's host is the barrier underneath.
 
 6. **The routing door refuses every other writer of a registration** —
-   `assertStackRegistrationWrite` at the object write choke point (create, update, delete),
+   `assertStackRegistrationWrite` at the object write choke point (create, update, delete) and the
+   publish verb (a registration never federates: publishing would journal this instance's
+   in-cluster endpoint and internal-egress allowance to peers; the stack itself never publishes),
    whatever the caller holds, `secret:write` included: a tenant attempt to re-point or re-trust a
    wired system is a 409 with the reason. Only `stack/wiring.ts` passes `stackManagedWrite`
    (`stack-registration-door.test.ts`), and routing does not rest on the refusal: a property
    rewritten by any path still routes where the wiring says (asserted with raw SQL).
 
-7. **Which organizations the stack serves — *this increment's* call.** The stack is instance-level
-   (ADR-0058 E2) but execution systems are per-org, and every served org drives the SAME scoped
-   backend accounts: a served org's tenants can sync any Application the bundled Argo CD knows,
-   read any repository its Gitea admin can, and submit any WorkflowTemplate in its namespace. So:
+7. **Which organizations the stack serves — ONE, until M29.6 (owner decision 2026-09-25).** The
+   stack is instance-level (ADR-0058 E2) but execution systems are per-org, and every served org
+   would drive the SAME backend identities: a served org's tenants can sync any Application the
+   bundled Argo CD knows, read and write any repository the Gitea site admin can (the Gitea token is
+   the site admin's, §1.3 — not a per-org or non-admin identity), and submit any WorkflowTemplate in
+   its namespace. Per-org isolation on the shared backends — an Argo CD AppProject and account, and
+   a non-admin Gitea user and organization, per served org — is built in **M29.6**. Until it lands:
+   - **a second served organization is refused** (`PUT /instance/stack/orgs/{orgId}` → 409 naming
+     the served org, the shared identities and M29.6; `stack-wiring.integration.test.ts`). The
+     operator can MOVE the stack (detach, then attach), never widen it;
+   - **the Gitea identity stays the site admin's in M29.2**, said plainly: a dedicated non-admin
+     SCP user sees no repository it is not a member of, so it is useful only with the per-org Gitea
+     organization M29.6 builds — replacing it earlier would make discovery list nothing. With one
+     served org, the site-admin reach is that one org's;
    - **the deployment's bootstrap organization is served by default**, on the first wiring — the
      single-org install is wired end to end with no step (charter "Automatic by Default");
    - **any other organization is served only by an instance operator** (`PUT
-     /instance/stack/orgs/{orgId}`, `scp stack attach`, Admin › Stack), audited;
+     /instance/stack/orgs/{orgId}`, `scp stack attach`, Admin › Stack), audited — and, until M29.6,
+     only in place of the one served now;
    - **an org cannot serve itself.** An org-admin opt-in (the first-run flow was considered) would
      let an org grant itself reach into every other served org's backend state — the M28 shape.
    - The default fires once (`stack_settings.served_orgs_initialized`); an operator who later stops
@@ -150,6 +165,15 @@ quietly.
   pod, so the bundle's "only scpd's pods in SCP's namespace" ingress rule is exercised structurally
   (helm-verify) and the node is admitted beside it by a fixture; the controller's egress policy is
   asserted as an object there and against the real render in helm-verify.
+- **Registration is per org and never fails a committed write.** The reconcile runs each
+  (org, backend) in its own tenant transaction and reports what did not converge instead of
+  throwing; the hand-off and attach doors answer for their own commit. The controller revokes a
+  backend's old tokens only once the new one is stored — and, if a hand-off's response failed after
+  scpd stored it, on the next tick that finds scpd holding exactly that hand-off.
+- **Endpoints are pinned twice.** The wiring URL must be the backend's own Service in its own
+  namespace (`STACK_BACKEND_SERVICES` in `@scp/schemas`, which the controller derives from too), and
+  a discovery against a registration runs that backend's own module with an allowlist of caller
+  keys under a server-namespaced plugin instance id (`discovery:<org>:<id>`).
 - **Open (owner): Argo Events' inbound wiring.** SCP never calls Argo Events; its sensors would call
   SCP's change-source webhook, which needs an org-scoped reporter credential held in the shared
   backend namespace. Which principal, which permission, and for which served org are the owner's to

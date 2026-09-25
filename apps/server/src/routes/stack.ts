@@ -665,7 +665,10 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
           bootstrapOrgName: deps.config.bootstrapOrgName
         });
       });
-      await reconcileStackRegistrations(deps, request.id, actor);
+      // The hand-off SUCCEEDED once the token is stored: the controller revokes the old token on
+      // this 204, so registering (a separate, per-org step) must not be able to turn it into an
+      // error. What did not converge is logged and retried on the next status report.
+      await convergeAfterCommit(deps, request.id, actor);
       reply.status(204).send();
     }
   });
@@ -779,7 +782,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       openapi: {
         operationId: "attachStackServedOrg",
         summary:
-          "Serve another organization with the Standard Stack: every wired backend is registered there. Its tenants then drive the same scoped backend accounts as every other served org — an instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0061)",
+          "Serve an organization with the Standard Stack: every wired backend is registered there. Until M29.6 builds per-organization isolation on the shared backends, ONE organization is served at a time — a second is refused (409); detach the served one first to move the stack. An instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0061)",
         tags: ["stack"]
       }
     },
@@ -793,7 +796,9 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
         });
         return orgList(client);
       });
-      await reconcileStackRegistrations(deps, request.id, actor);
+      // Attached is attached: a registration that fails to converge is logged and retried, never
+      // reported as a 409 for an attach that committed.
+      await convergeAfterCommit(deps, request.id, actor);
       reply.status(200).send(body);
     }
   });
@@ -823,6 +828,19 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       reply.status(200).send(body);
     }
   });
+}
+
+/** Registration after a committed write: never throws (per-org needs are logged in the reconcile). */
+async function convergeAfterCommit(
+  deps: AppDeps,
+  requestId: string,
+  actor: InstanceActor
+): Promise<void> {
+  try {
+    await reconcileStackRegistrations(deps, requestId, actor);
+  } catch (err) {
+    request_log(err);
+  }
 }
 
 /** Last convergence per process — the status door's debounce (the hand-off and attach doors
