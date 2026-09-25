@@ -471,6 +471,15 @@ stackd:
     - scp-argo-rollouts
     - scp-argo-events
     - scp-gitea
+  # M29.3 (ADR-0062): CANARY OUT OF THE BOX. Fixed by the release, pinned equal to @scp/schemas'
+  # STACK_AUTHORING by a test — not operator choices. `argocdNamespace` is where the controller
+  # applies the authoring AppProject, its own project and the Rollouts-to-target Applications
+  # (a Role there, argoproj.io applications/appprojects only); `namespace` is the ONE namespace
+  # SCP-authored deployments land in on this cluster, created here (the authoring project allows
+  # nothing cluster-scoped, so nothing it deploys could create one).
+  authoring:
+    argocdNamespace: scp-argocd
+    namespace: scp-apps
   # Air-gap image retargets: `<values path under bundledExecutor>: <image ref>`, e.g.
   #   argoEvents.image: registry.internal/scp/argo-events:v1.9.10@sha256:…
   # Only image fields are accepted (the controller refuses any other key). The air-gap install.sh

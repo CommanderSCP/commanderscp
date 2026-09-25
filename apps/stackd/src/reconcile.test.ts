@@ -176,7 +176,9 @@ function harness(): Harness {
         }
       },
       putWiring: async () => undefined,
-      deleteWiring: async () => undefined
+      deleteWiring: async () => undefined,
+      putAuthoring: async () => undefined,
+      deleteAuthoring: async () => undefined
     },
     kube: client,
     helm,
@@ -530,7 +532,9 @@ describe("the stack controller's reconcile", () => {
       },
       putStatus: async () => undefined,
       putWiring: async () => undefined,
-      deleteWiring: async () => undefined
+      deleteWiring: async () => undefined,
+      putAuthoring: async () => undefined,
+      deleteAuthoring: async () => undefined
     };
     const controller = startStackController(h.deps, { intervalMs: 1 });
     await controller.firstTick;

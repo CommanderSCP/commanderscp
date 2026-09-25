@@ -592,6 +592,11 @@ export function AdminStackPage(): React.JSX.Element {
                 : "This organization is not served by the Standard Stack — an instance operator decides which organizations it serves."}
             </p>
           ) : null}
+          <p className="text-xs text-slate-500" data-testid="stack-authoring">
+            {view.authoring.configured
+              ? `Canary deployments are on: SCP authors Rollouts into ${view.authoring.namespace} (project ${view.authoring.project}) on in-cluster${view.authoring.clusters.length > 0 ? `, ${view.authoring.clusters.join(", ")}` : ""}.`
+              : "Canary deployments are off: a component asking for a canary is refused until Argo Rollouts, Argo CD and Gitea are all enabled and ready."}
+          </p>
           <Card size="flush">
             <Table>
               <TableHeader>

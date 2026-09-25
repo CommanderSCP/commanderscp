@@ -88,6 +88,14 @@ function view(over: Partial<StackView> = {}): StackView {
             : null
     })),
     servesThisOrg: true,
+    authoring: {
+      configured: false,
+      project: "scp-authored",
+      namespace: "scp-apps",
+      carrierRevision: null,
+      clusters: [],
+      configuredAt: null
+    },
     ...over
   };
 }
