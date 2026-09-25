@@ -126,12 +126,15 @@ SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" login --
 # collisions), so neither domain's demo-seed login (which would otherwise clear this) ever runs.
 # ensureBootstrapAdmin always sets mustChangePassword:true, and requireAuth blocks every route but
 # /auth/{me,logout,password} until it clears — including the `federation init` calls right below.
-# Same current/new password clears the flag without changing it (scp install's own login does the
-# same thing, install-cli.ts's finishLogin).
+# #422 re-verify BLOCKING 0: a same-password "change" is refused server-side now (it never actually
+# changed anything), so each domain moves to a genuinely fresh, thrown-away password — nothing
+# later in this script uses ADMIN_PASSWORD_A/B again (the CLI's own stored session does the rest).
+FRESH_PW_A="drill-$(head -c18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
+FRESH_PW_B="drill-$(head -c18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
 echo "==> scp passwd (domain A) — clear the forced-password-change flag so federation init can proceed"
-SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" passwd --current-password "$ADMIN_PASSWORD_A" --new-password "$ADMIN_PASSWORD_A"
+SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" passwd --current-password "$ADMIN_PASSWORD_A" --new-password "$FRESH_PW_A"
 echo "==> scp passwd (domain B)"
-SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" passwd --current-password "$ADMIN_PASSWORD_B" --new-password "$ADMIN_PASSWORD_B"
+SCP_CONFIG_DIR="$CONFIG_DIR_B" SCP_API_URL="$API_URL_B" "${CLI_BIN[@]}" passwd --current-password "$ADMIN_PASSWORD_B" --new-password "$FRESH_PW_B"
 
 echo "==> scp federation init (domain A = commander, domain B = outpost)"
 SCP_CONFIG_DIR="$CONFIG_DIR_A" SCP_API_URL="$API_URL_A" "${CLI_BIN[@]}" federation init --name domainA --role commander --output json

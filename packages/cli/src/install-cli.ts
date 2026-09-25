@@ -116,10 +116,11 @@ export function apiServiceName(releaseName: string): string {
 
 /** The `helm upgrade --install` values this installer sets for every kube-mode install, connected
  *  or air-gapped — the values a plain `helm install` would otherwise need typed by hand (the
- *  measured gap, proposal §2: "no role choice, no profile choice, no guidance"). Does NOT include
- *  `stackd.enabled` (the chart's OWN default is now `true` — ADR-0058 "the default flip", flipped
- *  by this milestone) so a bare `helm install` with no `scp install` involved gets it too; explicit
- *  here only for `retrans`, which turns it back OFF (`wantsStackController`). */
+ *  measured gap, proposal §2: "no role choice, no profile choice, no guidance"). Sets
+ *  `stackd.enabled` explicitly per role (the chart's OWN default stays `false` — ADR-0060 §3,
+ *  reversed from this milestone's first version) and `bootstrap.generate=true` (the chart's OWN
+ *  default also stays `false` — #422 re-verify BLOCKING 2, same reasoning: only an ACTUAL
+ *  `scp install` run should make either of these appear on a release). */
 export function helmSetArgs(opts: {
   role: FederationRole;
   profile: InstallProfile;
@@ -130,6 +131,7 @@ export function helmSetArgs(opts: {
     `federationRole=${opts.role}`,
     `deploymentMode=${deploymentModeForProfile(opts.profile)}`,
     `instanceOperator.grantBootstrapAdmin=true`,
+    `bootstrap.generate=true`,
     `bootstrap.orgName=${opts.orgName}`,
     `bootstrap.adminUsername=${opts.adminUsername}`
   ];
@@ -641,6 +643,28 @@ export async function runInstall(
       }
       await run(shell, path.join(opts.bundle, "install.sh"), args);
     }
+
+    // #422 re-verify, BLOCKING 4 — RE-RUN DETECTION, compose's own version of kube mode's Secret
+    // probe above. A re-run used to mint a FRESH random password every time (the "installer
+    // generates it itself" design, fine for a first run) and hand it to the container — but on a
+    // re-run the admin row already exists, `ensureBootstrapAdmin`'s existingAdmin check skips
+    // consuming this new value entirely, and `finishLogin` below then tried to log in with a
+    // password that was never applied to anything: always a 401. Detected the same way `docker
+    // compose` itself would answer "does this project already have this service" — `ps -a -q`
+    // against the project+service, BEFORE generating a new password or touching env at all.
+    const existingContainer = await shell.exec("docker", [
+      "compose",
+      "-f",
+      composeFile,
+      "-p",
+      opts.releaseName,
+      "ps",
+      "-a",
+      "-q",
+      "scp"
+    ]);
+    const alreadyInstalled = existingContainer.code === 0 && existingContainer.stdout.trim().length > 0;
+
     const env: NodeJS.ProcessEnv = {
       SCP_FEDERATION_ROLE: opts.role,
       SCP_DEPLOYMENT_MODE: deploymentModeForProfile(opts.profile),
@@ -648,8 +672,10 @@ export async function runInstall(
       SCP_BOOTSTRAP_ADMIN_USERNAME: opts.adminUsername,
       // Compose has no Kubernetes Secret store, so there is nothing to read back: this installer
       // GENERATES the password itself and hands it to the container as a plain env var — the
-      // installer is its own, only reader, with no read-back step needed at all.
-      SCP_BOOTSTRAP_ADMIN_PASSWORD: randomOneTimePassword()
+      // installer is its own, only reader, with no read-back step needed at all. On a re-run this
+      // value is never consumed by anything (the admin row already exists), so it is only ever
+      // set on a first run — never regenerated to something login can't use.
+      ...(alreadyInstalled ? {} : { SCP_BOOTSTRAP_ADMIN_PASSWORD: randomOneTimePassword() })
     };
     // #422 review fix (BLOCKING 1) — `env` above was built and then never threaded through: this
     // call ran with the CALLER's shell environment, not `env`, so compose always installed a
@@ -668,6 +694,20 @@ export async function runInstall(
         "substrate and is NOT installed here (proposal §3a) — re-run with --mode kube (or " +
         "--bootstrap-k3s) for it. Gitea and SCP itself are running."
     );
+    if (alreadyInstalled) {
+      shell.log(
+        "this release was already installed — no fresh one-time password to log in with. " +
+          "Nothing further to do here: run `scp login --base-url <url>` with your own " +
+          "credentials, or `scp whoami` if you are already logged in."
+      );
+      return {
+        baseUrl: opts.baseUrl ?? `http://127.0.0.1:8080/api/v1`,
+        loggedInAs: "",
+        org: "",
+        stack: null,
+        hqOutpostDeclared: false
+      };
+    }
     return finishLogin(shell, {
       baseUrl: opts.baseUrl ?? `http://127.0.0.1:8080/api/v1`,
       adminUsername: opts.adminUsername,
@@ -813,11 +853,29 @@ async function finishLogin(
   // federation drill 403'd on its own `federation init` call). `ensureBootstrapAdmin` now ALWAYS
   // sets `mustChangePassword: true`, and `requireAuth` blocks EVERY route but
   // `/auth/{me,logout,password}` until it clears — including every call THIS installer itself is
-  // about to make (federation init, stack backend enable, HQ outpost declare). Submitting the SAME
-  // password as both "current" and "new" clears the flag without changing what the password IS, so
-  // the rest of THIS run succeeds and the operator's printed password still logs in afterward (the
-  // same reasoning apps/server/src/seed.ts's demo-seed login already uses).
-  await client.auth.changePassword(opts.password, opts.password);
+  // about to make (federation init, stack backend enable, HQ outpost declare).
+  //
+  // #422 re-verify, BLOCKING 0 — measured live: submitting the SAME password as both "current" and
+  // "new" returned 204 and cleared the flag WITHOUT changing the stored hash — changeLocalPassword
+  // now refuses that outright (same-as-current). Non-interactive automation (this command's own
+  // `--yes` DoD) can't prompt a human for a real new password, so it mints a genuinely FRESH one
+  // and changes to THAT — a real change, this session (`login.token`) kept alive by
+  // changeLocalPassword's own current-session exemption, so the rest of this run proceeds exactly
+  // as before. The fresh password is printed ONCE, below, with the same "not stored in plaintext"
+  // property the original chart-Secret password had — it exists only in this process's memory and
+  // this terminal, never a Kubernetes Secret or Helm release record (closing the exposure ADR-0060
+  // §2 already documented for the FIRST password: this second one was never rendered by the chart
+  // at all). It is deliberately NOT re-armed for a forced change again (unlike
+  // apps/server/src/seed.ts's demo-seed path, which restores the ORIGINAL password specifically so
+  // an operator's real login still goes through that door) — an operator running `scp install`
+  // interactively already sees this exact terminal output, so a further round-trip buys nothing;
+  // they are told to change it for their own routine use.
+  const freshPassword = randomOneTimePassword();
+  await client.auth.changePassword(opts.password, freshPassword);
+  shell.log(
+    `New password (shown once — not stored anywhere, not even in a Kubernetes Secret): ${freshPassword}\n` +
+      `  Change it for routine use: scp passwd`
+  );
 
   // The chart's SCP_FEDERATION_ROLE (helmSetArgs' federationRole=…) only controls
   // config.federationRole — promotion export / cosign minting / dependency automation's

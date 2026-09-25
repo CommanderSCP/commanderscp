@@ -116,6 +116,16 @@ describe("helmSetArgs", () => {
     expect(args).toContain("instanceOperator.grantBootstrapAdmin=true");
   });
 
+  it("#422 re-verify BLOCKING 2: always turns bootstrap.generate ON — the chart's own default is OFF (an existing GitOps/bare-helm release must not be surprised by a new Secret)", () => {
+    const args = helmSetArgs({
+      role: "commander",
+      profile: "eval",
+      orgName: "default",
+      adminUsername: "admin"
+    });
+    expect(args).toContain("bootstrap.generate=true");
+  });
+
   it("explicitly turns stackd ON for commander/outpost — the chart's own default is OFF (#422 review: GitOps/Argo CD safety)", () => {
     const args = helmSetArgs({
       role: "commander",
@@ -596,13 +606,15 @@ describe("runInstall — kube mode", () => {
         args: ["admin", "correct-horse-battery-staple"]
       });
       // #422 review fix, found via a REAL e2e drill 403ing on its own next call: ensureBootstrapAdmin
-      // always sets mustChangePassword:true, so the installer must clear it (same password in and
-      // out) BEFORE any of its own later calls (federation.init, stack.putBackend,
-      // federation.createOutpost) — every one of which would otherwise 403.
-      expect(sdkCalls.find((c) => c.method === "auth.changePassword")).toEqual({
-        method: "auth.changePassword",
-        args: ["correct-horse-battery-staple", "correct-horse-battery-staple"]
-      });
+      // always sets mustChangePassword:true, so the installer must clear it BEFORE any of its own
+      // later calls (federation.init, stack.putBackend, federation.createOutpost) — every one of
+      // which would otherwise 403. #422 re-verify BLOCKING 0: a same-password "change" is refused
+      // server-side now, so this must be a REAL change — a fresh, different second password.
+      const changePasswordCall = sdkCalls.find((c) => c.method === "auth.changePassword");
+      expect(changePasswordCall?.args[0]).toBe("correct-horse-battery-staple");
+      expect(changePasswordCall?.args[1]).not.toBe("correct-horse-battery-staple");
+      expect(typeof changePasswordCall?.args[1]).toBe("string");
+      expect((changePasswordCall?.args[1] as string).length).toBeGreaterThan(0);
       expect(sdkCalls.findIndex((c) => c.method === "auth.changePassword")).toBeLessThan(
         sdkCalls.findIndex((c) => c.method === "federation.init")
       );
@@ -793,7 +805,11 @@ describe("runInstall — compose mode", () => {
       const execCalls = (
         shell as Shell & { __calls: { method: string; args: unknown[] }[] }
       ).__calls.filter((c) => c.method === "exec");
-      const composeCall = execCalls.find((c) => c.args[0] === "docker");
+      // #422 re-verify BLOCKING 4 added an EARLIER `docker compose ps` re-run probe — find the
+      // `up` call specifically, not just the first "docker" exec.
+      const composeCall = execCalls.find(
+        (c) => c.args[0] === "docker" && (c.args[1] as string[]).includes("up")
+      );
       expect(composeCall).toBeDefined();
       const composeEnv = composeCall!.args[2] as { env?: NodeJS.ProcessEnv } | undefined;
       expect(composeEnv?.env).toBeDefined();
@@ -807,6 +823,53 @@ describe("runInstall — compose mode", () => {
       expect(password).toBeTruthy();
       expect(sdkCalls.find((c) => c.method === "login")?.args).toEqual(["root", password]);
       expect(summary.loggedInAs).toBe("root");
+    }
+  );
+
+  it(
+    "#422 re-verify MUTATION-CAUGHT (BLOCKING 4): a re-run against an already-running compose " +
+      "project skips credential surfacing instead of minting a password the container never " +
+      "applies (the admin row already exists) and then failing to log in with it",
+    async () => {
+      const execCalls: { args: unknown[] }[] = [];
+      const shell = fakeShell({
+        exec: async (cmd, args, opts) => {
+          execCalls.push({ args: [cmd, args, opts] });
+          if (cmd === "docker" && args.includes("ps")) {
+            return { code: 0, stdout: "existing-container-id\n", stderr: "" };
+          }
+          return { code: 0, stdout: "", stderr: "" };
+        }
+      });
+      const summary = await runInstall(
+        {
+          role: "commander",
+          profile: "eval",
+          mode: "compose",
+          namespace: "scp",
+          releaseName: "scp",
+          with: [],
+          without: [],
+          yes: true,
+          orgName: "default",
+          adminUsername: "admin",
+          portForwardPort: 18080,
+          helmTimeoutSeconds: 60,
+          stackTimeoutSeconds: 1,
+          dryRun: false,
+          bootstrapK3s: false,
+          set: []
+        },
+        shell
+      );
+      const composeUpCall = execCalls.find(
+        (c) => c.args[0] === "docker" && (c.args[1] as string[]).includes("up")
+      );
+      const composeEnv = composeUpCall!.args[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      // The unmutated fix: no fresh password minted, no login attempted, no SDK call at all.
+      expect(composeEnv?.env?.SCP_BOOTSTRAP_ADMIN_PASSWORD).toBeUndefined();
+      expect(sdkCalls.find((c) => c.method === "login")).toBeUndefined();
+      expect(summary.loggedInAs).toBe("");
     }
   );
 });
