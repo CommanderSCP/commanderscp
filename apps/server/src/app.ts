@@ -64,6 +64,7 @@ import { registerInstanceFreezeRoutes } from "./routes/instance-freezes.js";
 import { registerInstanceScanExclusionAdmissionRoutes } from "./routes/instance-scan-exclusion-admissions.js";
 import { registerScannerAssignmentRoutes } from "./routes/scanner-assignments.js";
 import { registerStackRoutes } from "./routes/stack.js";
+import { registerInstanceOperatorRoutes } from "./routes/instance-operators.js";
 import { registerScanOverrideGrantRoutes } from "./routes/scan-override-grants.js";
 import { registerScanDbRoutes } from "./routes/scan-db.js";
 import { registerDependencySubscriptionRoutes } from "./routes/dependency-subscriptions.js";
@@ -292,6 +293,7 @@ export async function buildApp(
   registerInstanceScanExclusionAdmissionRoutes(app, deps);
   registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   registerStackRoutes(app, deps); // M29.4 the Standard Stack desired state + controller status (ADR-0058)
+  registerInstanceOperatorRoutes(app, deps); // M29.4 the instance-operator role + instance audit chain
   registerScanDbRoutes(app, deps); // M13.3b-ii offline scanner-DB cache: status/staleness/refresh/load (ADR-0020)
   registerDependencySubscriptionRoutes(app, deps); // M21.3 instance unlock + (component, line) enablement resolution (ADR-0032 §6)
   // THE PRODUCER DECLARATION'S AUTHORING SURFACE. See docs/server.md §8.

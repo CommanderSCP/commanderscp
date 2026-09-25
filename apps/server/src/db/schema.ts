@@ -2334,9 +2334,17 @@ export const instanceOperatorCredentials = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    lastUsedAt: timestamp("last_used_at", { withTimezone: true })
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /** `full` opens every instance-operator door; `stack-controller` opens only the stack
+     *  controller's two (spec read, status write) and nothing else (ADR-0058). Only install-time
+     *  provisioning creates the latter; the mint door creates `full` only. */
+    scope: text("scope").notNull().default("full")
   },
   (table) => [
+    check(
+      "instance_operator_credentials_scope_ck",
+      sql`${table.scope} IN ('full', 'stack-controller')`
+    ),
     /** drizzle/0104 — what makes the `token_id` lookup in `verifyOperatorCredential` resolve one
      *  row. A `uniqueIndex` rather than `.unique()` sugar because 0104 creates an INDEX named
      *  `..._key`, which the sugar's default `..._unique` constraint name would not match. */
@@ -2672,6 +2680,8 @@ export const stackBackends = pgTable(
     backend: text("backend").primaryKey(),
     enabled: boolean("enabled").notNull().default(false),
     sizeTier: text("size_tier").notNull().default("small"),
+    /** Bumped by the purge door; a disabled backend keeps its data until the controller sees it. */
+    purgeGeneration: integer("purge_generation").notNull().default(0),
     specUpdatedAt: timestamp("spec_updated_at", { withTimezone: true }).notNull().defaultNow(),
     phase: text("phase"),
     runningVersion: text("running_version"),
@@ -2684,6 +2694,10 @@ export const stackBackends = pgTable(
     detail: jsonb("detail")
       .notNull()
       .default(sql`'[]'::jsonb`),
+    /** The controller's own state hashes as it last reported them (ADR-0058: a last-good set or
+     *  inventory rewritten in the cluster is refused against these). */
+    lastGoodSha256: text("last_good_sha256"),
+    inventorySha256: text("inventory_sha256"),
     statusObservedAt: timestamp("status_observed_at", { withTimezone: true })
   },
   (t) => [
@@ -2705,11 +2719,67 @@ export const stackSettings = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     controllerRelease: text("controller_release"),
     controllerObservedUpgradeGeneration: integer("controller_observed_upgrade_generation"),
-    controllerSeenAt: timestamp("controller_seen_at", { withTimezone: true })
+    controllerSeenAt: timestamp("controller_seen_at", { withTimezone: true }),
+    /** The install-time controller credential this deployment provisioned — what a rotation
+     *  revokes (by id, never by name). */
+    controllerCredentialId: uuid("controller_credential_id")
   },
   (t) => [
     check("stack_settings_singleton_ck", sql`${t.id} = 'instance'`),
     check("stack_settings_update_policy_ck", sql`${t.updatePolicy} IN ('automatic', 'manual')`),
     check("stack_settings_upgrade_generation_ck", sql`${t.upgradeGeneration} >= 0`)
   ]
+);
+
+/**
+ * THE INSTANCE-OPERATOR ROLE, GRANTED TO USERS (owner decision 2026-09-25, ADR-0058).
+ *
+ * Instance-tier authority checked against a user's NORMAL login session — no credential in the
+ * browser. Not a `role_bindings` row, on purpose: those are org-scoped (an org object is the
+ * scope, org RLS governs them, and an OrgAdmin can write them), and instance authority binds every
+ * org on the deployment, so no org role may be able to confer it. One live grant per user
+ * (partial unique index). Revoked by stamping, never by DELETE. Tenants read only their own org's
+ * grants (RLS); every write is `scp_operator`'s.
+ */
+export const instanceOperatorGrants = pgTable(
+  "instance_operator_grants",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    grantedBy: jsonb("granted_by").notNull(),
+    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedBy: jsonb("revoked_by")
+  },
+  (t) => [
+    uniqueIndex("instance_operator_grants_live_uq")
+      .on(t.orgId, t.userId)
+      .where(sql`${t.revokedAt} IS NULL`)
+  ]
+);
+
+/**
+ * THE INSTANCE AUDIT CHAIN (ADR-0058). Instance-level acts — stack changes, operator grants — bind
+ * every org, so they belong to no org's chain; this is the deployment's own, hash-chained the same
+ * way (DESIGN §4.3) and appended in the same transaction as the act. Append-only: `scp_operator`
+ * may INSERT and SELECT, nothing may UPDATE or DELETE.
+ */
+export const instanceAuditEvents = pgTable(
+  "instance_audit_events",
+  {
+    id: uuid("id").primaryKey(),
+    seq: bigint("seq", { mode: "number" }).notNull(),
+    action: text("action").notNull(),
+    actor: jsonb("actor").notNull(),
+    subject: text("subject"),
+    detail: jsonb("detail")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    requestId: text("request_id").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    prevHash: text("prev_hash").notNull(),
+    rowHash: text("row_hash").notNull()
+  },
+  (t) => [uniqueIndex("instance_audit_events_seq_uq").on(t.seq)]
 );

@@ -1,4 +1,23 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+
+/**
+ * `sha256:<hex>` — the hash of a MACHINE-GENERATED secret (M29.4, ADR-0058: the stack controller's
+ * install-time credential). argon2 exists to slow the guessing of a low-entropy password; a
+ * 43-character random secret has nothing to guess, and a sha256 is what Helm can compute at render
+ * time — which is what keeps the plaintext out of every namespace but the controller's own. Only
+ * install-time provisioning writes this form; every minted credential and PAT stays argon2.
+ */
+export const SHA256_HASH_PREFIX = "sha256:";
+
+export function sha256HashOf(secret: string): string {
+  return SHA256_HASH_PREFIX + createHash("sha256").update(secret, "utf8").digest("hex");
+}
+
+export function sha256HashMatches(stored: string, secret: string): boolean {
+  const a = Buffer.from(stored, "utf8");
+  const b = Buffer.from(sha256HashOf(secret), "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 import { verifyPasswordHashLimited } from "./argon2-limiter.js";
 
 /** The `<prefix><tokenId>.<secret>` bearer-token shape shared by PATs. See docs/auth.md §37. */
@@ -65,7 +84,9 @@ export async function verifyPrefixedToken<Row extends PrefixedTokenRow>(
 
   // Through the concurrency gate (argon2-limiter.ts) — same libuv-threadpool-saturation defense as
   // login. A saturation 429 propagates to the caller; a wrong secret is `false`, as before.
-  const valid = await verifyPasswordHashLimited(row.tokenHash, parsed.secret);
+  const valid = row.tokenHash.startsWith(SHA256_HASH_PREFIX)
+    ? sha256HashMatches(row.tokenHash, parsed.secret)
+    : await verifyPasswordHashLimited(row.tokenHash, parsed.secret);
   if (!valid) return null;
 
   // Best-effort — must never block/fail auth if this update fails (e.g. transient DB hiccup).

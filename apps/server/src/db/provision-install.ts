@@ -5,6 +5,40 @@ import {
   provisionInstallOperatorCredential
 } from "../auth/operator-auth.js";
 import { provisionOperatorRole, runtimeCredentials } from "./provision.js";
+import { parsePrefixedToken, sha256HashOf } from "../auth/prefixed-token.js";
+
+/**
+ * What the migrations Job is handed for the controller's credential. On Helm it is the token id and
+ * the sha256 of the secret ONLY (`SCP_STACKD_CREDENTIAL_TOKEN_ID` / `_SHA256`): the plaintext lives
+ * in the stack controller's own namespace and nowhere else (ADR-0058, review B1). The whole token
+ * (`SCP_STACKD_OPERATOR_CREDENTIAL`) is accepted too, for a self-migrating dev process.
+ */
+export function stackdCredentialMaterial(
+  env: NodeJS.ProcessEnv
+): { tokenId: string; secretSha256: string } | null {
+  const tokenId = (env.SCP_STACKD_CREDENTIAL_TOKEN_ID ?? "").trim();
+  const sha = (env.SCP_STACKD_CREDENTIAL_SHA256 ?? "").trim();
+  if (tokenId || sha) {
+    if (!tokenId || !sha) {
+      throw new Error(
+        "SCP_STACKD_CREDENTIAL_TOKEN_ID and SCP_STACKD_CREDENTIAL_SHA256 come together"
+      );
+    }
+    return { tokenId, secretSha256: sha };
+  }
+  const whole = (env.SCP_STACKD_OPERATOR_CREDENTIAL ?? "").trim();
+  if (!whole) return null;
+  const parsed = parsePrefixedToken("scp_op_", whole);
+  if (!parsed || parsed.secret.length < 32) {
+    throw new Error(
+      "SCP_STACKD_OPERATOR_CREDENTIAL is not a well-formed scp_op_<tokenId>.<secret> — refusing to record it"
+    );
+  }
+  return {
+    tokenId: parsed.tokenId,
+    secretSha256: sha256HashOf(parsed.secret).slice("sha256:".length)
+  };
+}
 
 /**
  * THE INSTALL-TIME PRINCIPALS THE STACK CONTROLLER NEEDS (M29.4, ADR-0058), provisioned over the
@@ -36,11 +70,11 @@ export async function provisionInstallTimePrincipals(
     await provisionOperatorRole(adminPool, op.user, op.password);
     log.push("scp_operator login provisioned");
   }
-  const stackdToken = (env.SCP_STACKD_OPERATOR_CREDENTIAL ?? "").trim();
-  if (stackdToken) {
+  const material = stackdCredentialMaterial(env);
+  if (material) {
     const outcome = await provisionInstallOperatorCredential(adminPool, {
       name: STACKD_INSTALL_CREDENTIAL_NAME,
-      token: stackdToken
+      ...material
     });
     log.push(
       outcome === "revoked"

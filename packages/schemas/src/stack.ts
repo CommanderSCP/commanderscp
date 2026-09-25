@@ -72,7 +72,10 @@ export const StackReleaseSchema = z
 export const StackBackendSpecSchema = z.object({
   backend: StackBackendSchema,
   enabled: z.boolean(),
-  sizeTier: StackSizeTierSchema
+  sizeTier: StackSizeTierSchema,
+  /** Bumped by `POST /instance/stack/backends/{b}/purge`. A DISABLED backend keeps its data (its
+   *  volumes and generate-once secrets) until this exceeds what the controller last purged. */
+  purgeGeneration: z.number().int().min(0)
 });
 export type StackBackendSpec = z.infer<typeof StackBackendSpecSchema>;
 
@@ -86,9 +89,23 @@ export type StackSettings = z.infer<typeof StackSettingsSchema>;
 
 /** Everything the controller reads — and the ONLY thing it reads from the API. One entry per
  *  backend, always all of them (an absent row is `enabled: false, sizeTier: small`). */
+/** A sha256, lowercase hex. The only string the controller's input carries: it can only be
+ *  COMPARED against bytes the controller holds, never rendered into anything. */
+export const Sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/** The hashes of the controller's own state as it last reported them — kept on the scpd side so a
+ *  last-good set or an inventory rewritten in the cluster is refused rather than applied or pruned. */
+export const StackBackendIntegritySchema = z.object({
+  backend: StackBackendSchema,
+  lastGoodSha256: Sha256HexSchema.nullable(),
+  inventorySha256: Sha256HexSchema.nullable()
+});
+export type StackBackendIntegrity = z.infer<typeof StackBackendIntegritySchema>;
+
 export const StackSpecDocumentSchema = z.object({
   settings: StackSettingsSchema,
-  backends: z.array(StackBackendSpecSchema)
+  backends: z.array(StackBackendSpecSchema),
+  integrity: z.array(StackBackendIntegritySchema)
 });
 export type StackSpecDocument = z.infer<typeof StackSpecDocumentSchema>;
 
@@ -130,7 +147,10 @@ export const StackBackendStatusReportSchema = z.strictObject({
   targetVersion: StackReleaseSchema.nullable(),
   lastError: z.string().max(2000).nullable(),
   needs: z.array(StackNeedSchema).max(20),
-  detail: z.array(z.string().max(500)).max(50)
+  detail: z.array(z.string().max(500)).max(50),
+  /** sha256 of the stored last good set and of the inventory, as this report leaves them. */
+  lastGoodSha256: Sha256HexSchema.nullable(),
+  inventorySha256: Sha256HexSchema.nullable()
 });
 export type StackBackendStatusReport = z.infer<typeof StackBackendStatusReportSchema>;
 
@@ -159,6 +179,7 @@ export const StackBackendViewSchema = z.object({
   backend: StackBackendSchema,
   enabled: z.boolean(),
   sizeTier: StackSizeTierSchema,
+  purgeGeneration: z.number().int().min(0),
   /** Null until the controller has reported this backend. */
   status: StackBackendStatusSchema.nullable()
 });
@@ -183,6 +204,77 @@ export const StackDiagnosticsSchema = z.object({
   backends: z.array(StackDiagnosticsBackendSchema)
 });
 export type StackDiagnostics = z.infer<typeof StackDiagnosticsSchema>;
+
+// ---- INSTANCE OPERATORS (owner decision 2026-09-25: a role granted to a user) -------------------
+
+/** Who performed an instance-level act. */
+export const InstanceActorSchema = z.object({
+  /** `session-role`: a logged-in user holding the instance-operator role. `credential` /
+   *  `bootstrap-env-token`: a machine or CLI presenting an operator credential. `install`: the
+   *  install-time bootstrap grant. */
+  mechanism: z.enum(["session-role", "credential", "bootstrap-env-token", "install"]),
+  orgId: z.string().uuid().nullable(),
+  userId: z.string().uuid().nullable(),
+  username: z.string().nullable(),
+  credentialId: z.string().uuid().nullable()
+});
+export type InstanceActor = z.infer<typeof InstanceActorSchema>;
+
+export const InstanceOperatorGrantSchema = z.object({
+  id: z.string().uuid(),
+  orgId: z.string().uuid(),
+  userId: z.string().uuid(),
+  username: z.string(),
+  grantedBy: InstanceActorSchema,
+  grantedAt: z.string(),
+  revokedAt: z.string().nullable(),
+  revokedBy: InstanceActorSchema.nullable()
+});
+export type InstanceOperatorGrant = z.infer<typeof InstanceOperatorGrantSchema>;
+
+export const InstanceOperatorGrantListSchema = z.object({
+  items: z.array(InstanceOperatorGrantSchema),
+  /** Whether the CALLER holds the role — what a page asks before offering a switch. */
+  callerHoldsRole: z.boolean()
+});
+export type InstanceOperatorGrantList = z.infer<typeof InstanceOperatorGrantListSchema>;
+
+export const CreateInstanceOperatorGrantRequestSchema = z.strictObject({
+  orgId: z.string().uuid(),
+  userId: z.string().uuid()
+});
+export type CreateInstanceOperatorGrantRequest = z.infer<
+  typeof CreateInstanceOperatorGrantRequestSchema
+>;
+
+export const InstanceOperatorGrantParamSchema = z.object({ grantId: z.string().uuid() });
+
+/** Whether the caller's own session holds the instance-operator role (any session may ask). */
+export const InstanceOperatorSelfSchema = z.object({ holdsRole: z.boolean() });
+export type InstanceOperatorSelf = z.infer<typeof InstanceOperatorSelfSchema>;
+
+/** One link of the INSTANCE audit chain (hash-chained like an org's, DESIGN §4.3). */
+export const InstanceAuditEventSchema = z.object({
+  id: z.string().uuid(),
+  seq: z.number().int(),
+  action: z.string(),
+  actor: InstanceActorSchema,
+  subject: z.string().nullable(),
+  detail: z.record(z.string(), z.unknown()),
+  requestId: z.string(),
+  occurredAt: z.string(),
+  prevHash: z.string(),
+  rowHash: z.string()
+});
+export type InstanceAuditEvent = z.infer<typeof InstanceAuditEventSchema>;
+
+export const InstanceAuditEventListSchema = z.object({
+  items: z.array(InstanceAuditEventSchema),
+  /** The server re-walked the whole chain; false names the first broken link. */
+  chainValid: z.boolean(),
+  brokenAt: z.string().nullable()
+});
+export type InstanceAuditEventList = z.infer<typeof InstanceAuditEventListSchema>;
 
 /** How long a controller report stays "current". Three missed 30s reconcile ticks, rounded up. */
 export const STACK_CONTROLLER_STALE_AFTER_MS = 120_000;
