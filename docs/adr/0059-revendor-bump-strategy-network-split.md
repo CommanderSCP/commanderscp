@@ -1,4 +1,4 @@
-# ADR-0058: The `re-vendor` bump strategy computes entirely in the orchestrator; the isolated runner is never launched for it
+# ADR-0059: The `re-vendor` bump strategy computes entirely in the orchestrator; the isolated runner is never launched for it
 
 **Status:** Accepted (2026-09-25, M29.8a) — the network/containment split below and the charter-language reading in "A charter-language interpretation" are this increment's calls, and the owner is invited to overrule either
 **Relates to:** ADR-0032 §8 (`scp-managed-dep`'s standard executor interface); PROJECT_CHARTER.md's `scp-managed-dep` amendment and its 2026-08-15 qualification (the orchestrator/runner network split this ADR extends); `tools/vendor-refresh` (the planner this strategy calls); `docs/proposals/zero-to-running.md` §9.1 step 1

@@ -2250,7 +2250,7 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
       The `re-vendor` bump strategy is wired into the real `scp-managed-dep` executor
       (`packages/plugins/managed-dep`) as a third `TriggerIntent` action, exercised end to end against a fixture
       upstream and a fake GitHub Git Data API (`packages/plugins/managed-dep/src/revendor.test.ts`) — one commit,
-      every file `planVendorRefresh` proposes, one pull request, zero containers launched. ADR-0058 records the
+      every file `planVendorRefresh` proposes, one pull request, zero containers launched. ADR-0059 records the
       charter-consistent design this needed: the runner's unqualified `--network none` clause is untouched because
       the `re-vendor` strategy never launches `scp-runner-dep` at all — the whole computation (network fetch, skopeo,
       `helm template`) runs in the orchestrator, extending the SAME orchestrator/runner split the charter's

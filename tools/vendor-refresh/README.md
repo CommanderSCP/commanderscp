@@ -5,7 +5,7 @@ Events, Gitea) at a new upstream tag: fetches the pinned release manifest(s), re
 image's digest through the repo's pinned skopeo (`tools/skopeo`, `@scp/cosign`'s `resolveSkopeo()`),
 and patches `deploy/helm-bundled/values.yaml`, `deploy/airgap/src/bundle-images.ts` and (where the
 image is already listed) `tools/ci-mirror/images.list`. See BUILD_AND_TEST.md's M29.8(a) and
-[ADR-0058](../../docs/adr/0058-revendor-bump-strategy-network-split.md) (the `re-vendor` managed-dep
+[ADR-0059](../../docs/adr/0059-revendor-bump-strategy-network-split.md) (the `re-vendor` managed-dep
 strategy this tool's planner also runs behind, in-process, from `packages/plugins/managed-dep`).
 
 It needs the internet to run for real — that is fine for a maintenance tool. Its own tests never touch
@@ -25,7 +25,7 @@ pnpm --filter @scp/vendor-refresh refresh <backend> <tag>
   what the chart itself renders, never asked for separately.
 
 Prints a summary and writes every file the plan describes; review with `git diff`. This tool never
-commits, pushes, or opens a pull request itself — see ADR-0058 for how the `re-vendor` managed-dep
+commits, pushes, or opens a pull request itself — see ADR-0059 for how the `re-vendor` managed-dep
 strategy does that in-process, from the server.
 
 ## Where each backend's manifest actually lives — measured, not assumed

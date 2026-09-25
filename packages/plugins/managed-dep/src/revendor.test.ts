@@ -10,7 +10,7 @@ import {
 import { recordingCtx } from "./write-test-support.js";
 
 /**
- * `re-vendor` — end to end through the REAL managed-dep dispatch path (ADR-0058), against a FIXTURE
+ * `re-vendor` — end to end through the REAL managed-dep dispatch path (ADR-0059), against a FIXTURE
  * upstream (never the network) and a FAKE GitHub Git Data API (never a real repository). This is the
  * reachability proof for `@scp/vendor-refresh`'s `planVendorRefresh`/`planArgoprojBackend`: deleting
  * the `action === "re-vendor"` dispatch in `index.ts`'s `trigger()`, or the `triggerRevendor` call it

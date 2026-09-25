@@ -180,7 +180,7 @@ export interface ParsedMergeDescriptor {
 
 /** What `action: "re-vendor"` sends. Distinct from {@link ManagedDepIntentParameters}: there is no
  *  `ecosystem`/`coordinate`/`manifestPath`/`fromVersion`/`toVersion` here — a re-vendor names a
- *  BACKEND and a TAG, not one manifest and one version (ADR-0058). */
+ *  BACKEND and a TAG, not one manifest and one version (ADR-0059). */
 export interface ManagedDepRevendorIntentParameters {
   action: "re-vendor";
   /** One of `@scp/vendor-refresh`'s `BACKEND_NAMES`. */
@@ -197,7 +197,7 @@ export interface ManagedDepRevendorIntentParameters {
   expectedHeadCommit?: string;
   /** Every file this backend's re-vendor may touch — the vendored manifest(s), `values.yaml`,
    *  `bundle-images.ts` and (when already listed) `images.list`. `planVendorRefresh`'s own output is
-   *  re-checked against this set before anything is sent (ADR-0058's containment half). */
+   *  re-checked against this set before anything is sent (ADR-0059's containment half). */
   declaredManifestPaths: string[];
 }
 
@@ -438,7 +438,7 @@ function assertNoControlBytes(label: string, value: string): void {
   }
 }
 
-/** Turn a `re-vendor` intent into a descriptor, or throw. See ADR-0058. */
+/** Turn a `re-vendor` intent into a descriptor, or throw. See ADR-0059. */
 export function parseRevendorDescriptor(intent: TriggerIntent): ParsedRevendorDescriptor {
   const params = (intent.parameters ?? {}) as Record<string, unknown>;
 
@@ -705,7 +705,7 @@ async function triggerMerge(
 }
 
 /**
- * THE `re-vendor` STRATEGY (ADR-0058). Unlike `bump`, this NEVER launches `scp-runner-dep`: the
+ * THE `re-vendor` STRATEGY (ADR-0059). Unlike `bump`, this NEVER launches `scp-runner-dep`: the
  * content is composed entirely here, by `planVendorRefresh` — a network fetch of the upstream
  * manifest(s) plus the pinned skopeo's digest resolution, both already the orchestrator's job on
  * every other dependency-automation path (ADR-0032 §7d, commander-only). There is no untrusted
@@ -765,7 +765,7 @@ async function triggerRevendor(
         readRepoFile
       );
 
-      // THE CONTAINMENT CHECK (ADR-0058): every file the plan proposes must be one this run was
+      // THE CONTAINMENT CHECK (ADR-0059): every file the plan proposes must be one this run was
       // authorised to touch. Refused before a single blob is created.
       const declared = new Set(descriptor.declaredManifestPaths);
       const undeclared = plan.files.map((f) => f.path).filter((p) => !declared.has(p));
@@ -780,7 +780,7 @@ async function triggerRevendor(
 
       const commitMessage = `chore(deps): re-vendor ${descriptor.backend} ${descriptor.fromTag} -> ${descriptor.toTag}`;
       const pullRequestBody = [
-        "Authored by CommanderSCP's `scp-managed-dep` executor's `re-vendor` strategy (ADR-0058).",
+        "Authored by CommanderSCP's `scp-managed-dep` executor's `re-vendor` strategy (ADR-0059).",
         "",
         `- backend: \`${descriptor.backend}\``,
         `- ${descriptor.fromTag} -> ${descriptor.toTag}`,
@@ -1066,7 +1066,7 @@ function describeCapabilities(): ExecutorCapabilities {
 }
 
 /** THE LAUNCHER SEAM. See docs/plugins.md §301. `vendorRefreshIO` is the SAME shape of seam for the
- *  `re-vendor` strategy's network reach (ADR-0058): the default is the real, network-reaching
+ *  `re-vendor` strategy's network reach (ADR-0059): the default is the real, network-reaching
  *  implementation, and every test injects a fixture-backed one instead — never a mock of this
  *  factory's caller. */
 export function createManagedDepExecutorPlugin(
