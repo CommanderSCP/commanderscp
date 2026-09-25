@@ -44,7 +44,8 @@
 # for `:dev` tags that no drill had made).
 #
 # Callers set these first (any may be empty -> defaulted here):
-#   RUNNER_IAC_REF, RUNNER_SCAN_REF, RUNNER_DEP_REF, RUNNER_OPS_REF, STACKD_REF, BUILDER_RPM_REF
+#   RUNNER_IAC_REF, RUNNER_SCAN_REF, RUNNER_DEP_REF, RUNNER_DEP_VENDOR_REF, RUNNER_OPS_REF,
+#   STACKD_REF, BUILDER_RPM_REF
 
 # Tag the drill stand-in carries. Deliberately NOT `scp-runner-scan:dev` — a stand-in must never be
 # addressable by the name of the thing it stands in for.
@@ -112,10 +113,18 @@ ensure_runner_source_images() {
   docker image inspect "$STACKD_REF" >/dev/null 2>&1 ||
     docker build -f apps/stackd/Dockerfile -t "$STACKD_REF" .
 
+  # scp-runner-dep-vendor (M29.8a): the credential-free, `--network none`-at-RUN-time re-vendor
+  # sandbox, built for real — same shape as scp-stackd (a bundled Node app plus the pinned helm),
+  # and the same REPO-ROOT-context deviation its own Dockerfile documents.
+  RUNNER_DEP_VENDOR_REF="${RUNNER_DEP_VENDOR_REF:-scp-runner-dep-vendor:dev}"
+  docker image inspect "$RUNNER_DEP_VENDOR_REF" >/dev/null 2>&1 ||
+    docker build -f apps/runner-dep-vendor/Dockerfile -t "$RUNNER_DEP_VENDOR_REF" .
+
   BUNDLE_RUNNER_ARGS=(
     --runner-iac-ref "$RUNNER_IAC_REF"
     --runner-scan-ref "$RUNNER_SCAN_REF"
     --runner-dep-ref "$RUNNER_DEP_REF"
+    --runner-dep-vendor-ref "$RUNNER_DEP_VENDOR_REF"
     --runner-ops-ref "$RUNNER_OPS_REF"
     --stackd-ref "$STACKD_REF"
     --builder-rpm-ref "$BUILDER_RPM_REF"
