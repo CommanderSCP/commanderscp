@@ -52,9 +52,11 @@ import { badRequest, conflict } from "../errors.js";
  *  - WHO CAN READ IT: `stack_credentials` has no `scp_app` grant (drizzle/0130); only
  *    `scp_operator` reads it, and what it reads is ciphertext sealed to a key held in the
  *    controller's own namespace, which no scpd identity can read (ADR-0058 §6).
- *  - WHO CAN REPLAY IT: every delivery takes the next `stack_credential_seq`, bound into the GCM
- *    additional data; the controller refuses a delivery for a target at or below the highest
- *    sequence it applied there, and any envelope past `notAfter`.
+ *  - WHO CAN REPLAY IT: every envelope carries its sealing time (as `notAfter`, the time plus a
+ *    fixed TTL) and a unique sequence, both bound into the GCM additional data; the controller
+ *    refuses an envelope sealed no later than the last it applied to that target, and any past
+ *    `notAfter`. (Ordered by time, not sequence: a restored or rebuilt database restarts the
+ *    sequence, never the clock.)
  *  - WHO CAN REDIRECT IT: the target (backend, Secret, key) is in the additional data, so a row
  *    whose columns were rewritten fails the tag; the controller also holds the target to the
  *    catalog it carries and derives the NAMESPACE from the backend itself — it is never sent.

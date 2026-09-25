@@ -104,7 +104,9 @@ quay.io/argoproj/argocli:v4.0.7=argoproj/argocli:v4.0.7 \
 quay.io/argoproj/workflow-controller:v4.0.7=argoproj/workflow-controller:v4.0.7 \
 quay.io/argoproj/argoexec:v4.0.7=argoproj/argoexec:v4.0.7 \
 docker.gitea.com/gitea:1.26.1-rootless=gitea/gitea:1.26.1-rootless \
-alpine:3.20=library/alpine:3.20}"
+alpine:3.20=library/alpine:3.20 \
+moby/buildkit:v0.33.0-rootless=moby/buildkit:v0.33.0-rootless \
+alpine/git:2.47.2=alpine/git:2.47.2}"
 STACKD_NAMESPACE="${SCP_KIND_STACKD_NAMESPACE:-scp-stackd-harness}"
 STACKD_RELEASE="scp"
 # The controller's RELEASE namespace — where scpd would run. Distinct from STACKD_NAMESPACE, as the

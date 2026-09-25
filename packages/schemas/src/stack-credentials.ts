@@ -299,8 +299,7 @@ export type StackCredentialEnvelope = z.infer<typeof StackCredentialEnvelopeSche
 /** One pending delivery, as the controller reads it (its credential ONLY). */
 export const StackCredentialDeliverySchema = z.object({
   deliveryId: z.string().uuid(),
-  /** Monotonic across the instance: the controller refuses any delivery for a target at or below
-   *  the highest sequence it has applied there (a replayed envelope). */
+  /** Unique per delivery (scpd's sequence), bound into the tag; the acknowledgement names it. */
   seq: z.number().int().min(1),
   backend: StackCredentialBackendSchema,
   secretName: StackCredentialSecretNameSchema,
@@ -308,7 +307,9 @@ export const StackCredentialDeliverySchema = z.object({
   op: StackCredentialOpSchema,
   /** The controller key this envelope is sealed to. */
   keyId: Sha256HexSchema,
-  /** After this the controller refuses the envelope. */
+  /** The sealing time plus STACK_CREDENTIAL_ENVELOPE_TTL_MS, bound into the tag. After it the
+   *  controller refuses the envelope; and it ORDERS deliveries — one sealed no later than the last
+   *  applied to the same target is refused as a replay. */
   notAfter: z.string().datetime(),
   envelope: StackCredentialEnvelopeSchema
 });
@@ -325,7 +326,7 @@ export const StackCredentialRefusalSchema = z.enum([
   "tampered",
   /** Sealed to a key this controller does not hold. */
   "wrong-key",
-  /** A sequence at or below the last applied for this target (a replay). */
+  /** Sealed no later than the last delivery applied to this target (a replay). */
   "replayed",
   /** Past its notAfter. */
   "expired",
@@ -395,8 +396,8 @@ export const StackCredentialsViewSchema = z.object({
 });
 export type StackCredentialsView = z.infer<typeof StackCredentialsViewSchema>;
 
-/** A sealed envelope is refused this long after it was sealed. The per-target sequence check
- *  refuses a replay regardless; this bounds one if the controller's own record is lost. */
+/** A sealed envelope is refused this long after it was sealed. The per-target ordering refuses a
+ *  replay regardless; this bounds one if the controller's own record is lost. */
 export const STACK_CREDENTIAL_ENVELOPE_TTL_MS = 60 * 60 * 1000;
 
 /** The GCM additional data for a delivery: every header field, in a fixed order. */

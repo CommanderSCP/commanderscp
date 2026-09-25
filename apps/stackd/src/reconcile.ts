@@ -122,7 +122,8 @@ export interface ControllerDeps {
   /** M29.5: credentials through SCP — deliver the sealed envelopes scpd holds into the backends'
    *  Secrets (`deliverCredentials`), and name what a ready backend still needs entered. */
   credentials?: {
-    deliver: (recordedKeySha256: string | null) => Promise<unknown>;
+    /** Returns the key id scpd now holds for this controller (after a publish, if one was needed). */
+    deliver: (recordedKeySha256: string | null) => Promise<{ keyId: string }>;
     needs: (backend: StackBackend) => Promise<StackNeed[]>;
   };
 }
@@ -897,10 +898,13 @@ export async function reconcileStack(deps: ControllerDeps): Promise<PutStackStat
   // deliveries — before the backends and again after each, so a value entered through SCP never
   // waits behind a long install for more than one backend's turn.
   memory(deps).workloadIdentities = validWorkloadIdentities(spec.workloadIdentities);
+  // What scpd holds of the controller's key: the spec's record, then whatever this tick published —
+  // so the key is published once, not before every backend.
+  let recordedKey = spec.credentialSealingKeySha256 ?? null;
   const deliver = async () => {
     if (!deps.credentials) return;
     try {
-      await deps.credentials.deliver(spec.credentialSealingKeySha256 ?? null);
+      recordedKey = (await deps.credentials.deliver(recordedKey)).keyId;
     } catch (err) {
       deps.log(
         `credential delivery failed (retried): ${err instanceof Error ? err.message : String(err)}`

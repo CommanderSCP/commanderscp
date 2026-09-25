@@ -36,12 +36,16 @@ import { backendNamespace, type StackRelease } from "./release.js";
  *   1. the target (backend, Secret, key) must be an entry of the catalog THIS IMAGE carries — the
  *      namespace is derived from the backend here, never read from anywhere;
  *   2. it must be sealed to the key this controller holds, and not past its `notAfter`;
- *   3. its sequence must exceed the highest this controller applied for that target (a replayed
- *      envelope — even a byte-identical copy of one that was valid — is refused);
+ *   3. it must have been SEALED LATER than the last delivery this controller applied to that
+ *      target (its `notAfter`, bound into the tag, is the sealing time plus a fixed TTL): a
+ *      replayed envelope — even a byte-identical copy of one that was valid — is refused. Time,
+ *      not scpd's sequence, orders them, because a sequence goes BACKWARDS when scpd's database is
+ *      restored or rebuilt (measured on kind: a fresh scpd's first credential was refused as a
+ *      replay of the previous scpd's), while scpd's clock does not;
  *   4. it must OPEN: the header is the GCM additional data, so a row whose target was rewritten
  *      in scpd's table fails the tag;
  *   5. only then is the value written into the backend namespace's Secret (or the key removed),
- *      the sequence recorded, and the delivery confirmed — scpd then drops the envelope.
+ *      that delivery recorded, and confirmed — scpd then drops the envelope.
  *
  * A refusal is confirmed with a reason CODE; nothing the controller opened ever travels back. The
  * value is never logged, never put in a status report, and the Buffer holding it is zeroed once
@@ -114,7 +118,7 @@ export async function loadOrCreateSealingKey(
   return keyPairFrom(privateDer);
 }
 
-/** Opens one envelope, or says why not. Checks everything BUT the sequence (the caller's). */
+/** Opens one envelope, or says why not. Checks everything BUT the ordering (the caller's). */
 export function openDelivery(
   key: SealingKeyPair,
   d: StackCredentialDelivery,
@@ -162,7 +166,8 @@ export function openDelivery(
 
 // ---- the applied-sequence record (replay refusal) -----------------------------------------------
 
-type Applied = Record<string, { seq: number; deliveryId: string }>;
+/** Per target: the last delivery applied, and when it was sealed (as its `notAfter`). */
+type Applied = Record<string, { notAfter: string; seq: number; deliveryId: string }>;
 const targetOf = (d: Pick<StackCredentialDelivery, "backend" | "secretName" | "key">) =>
   `${d.backend}/${d.secretName}/${d.key}`;
 
@@ -176,7 +181,17 @@ async function loadApplied(kube: KubeClient, namespace: string): Promise<Applied
   const raw = (live?.["data"] as Record<string, string> | undefined)?.["applied.json"];
   if (!raw) return {};
   const parsed = JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as unknown;
-  return parsed && typeof parsed === "object" ? (parsed as Applied) : {};
+  if (!parsed || typeof parsed !== "object") return {};
+  // Only entries that can order a delivery: one without a parseable sealing time orders nothing.
+  return Object.fromEntries(
+    Object.entries(parsed as Record<string, Partial<Applied[string]>>).filter(
+      ([, v]) =>
+        typeof v?.notAfter === "string" &&
+        Number.isFinite(Date.parse(v.notAfter)) &&
+        typeof v.seq === "number" &&
+        typeof v.deliveryId === "string"
+    )
+  ) as Applied;
 }
 
 async function saveApplied(kube: KubeClient, namespace: string, applied: Applied): Promise<void> {
@@ -254,7 +269,7 @@ async function refuse(
 export async function deliverCredentials(
   deps: CredentialDeps,
   recordedKeySha256: string | null
-): Promise<{ applied: number; refused: number }> {
+): Promise<{ applied: number; refused: number; keyId: string }> {
   const key = await loadOrCreateSealingKey(deps.kube, deps.stackdNamespace);
   if (recordedKeySha256 !== key.keyId) {
     await deps.api.putSealingKey({
@@ -264,7 +279,7 @@ export async function deliverCredentials(
     deps.log(`published the credential sealing key ${key.keyId.slice(0, 12)}…`);
   }
   const listed = await deps.api.credentialDeliveries();
-  const out = { applied: 0, refused: 0 };
+  const out = { applied: 0, refused: 0, keyId: key.keyId };
   if (listed.items.length === 0) return out;
   const applied = await loadApplied(deps.kube, deps.stackdNamespace);
   const now = (deps.now ?? (() => new Date()))();
@@ -275,9 +290,9 @@ export async function deliverCredentials(
     const target = targetOf(d);
     try {
       const last = applied[target];
-      if (last && d.seq <= last.seq) {
+      if (last && !(Date.parse(d.notAfter) > Date.parse(last.notAfter))) {
         // The delivery this controller already applied, whose confirmation was lost: confirm it
-        // again. Anything else at or below the recorded sequence is a replay.
+        // again. Anything else sealed no later than the one applied is a replay.
         if (last.seq === d.seq && last.deliveryId === d.deliveryId) {
           await deps.api.ackCredentialDelivery(d.deliveryId, { outcome: "applied", seq: d.seq });
         } else {
@@ -297,7 +312,7 @@ export async function deliverCredentials(
       } finally {
         opened.plaintext.fill(0);
       }
-      applied[target] = { seq: d.seq, deliveryId: d.deliveryId };
+      applied[target] = { notAfter: d.notAfter, seq: d.seq, deliveryId: d.deliveryId };
       await saveApplied(deps.kube, deps.stackdNamespace, applied);
       await deps.api.ackCredentialDelivery(d.deliveryId, { outcome: "applied", seq: d.seq });
       deps.log(

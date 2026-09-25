@@ -154,7 +154,8 @@ function rig(): Rig {
         key: key as StackCredentialDelivery["key"],
         op,
         keyId: pair.keyId,
-        notAfter: new Date(Date.now() + 60_000).toISOString()
+        // Strictly increasing, as scpd's clock makes them: each seal is later than the last.
+        notAfter: new Date(Date.now() + 60_000 + seqCounter).toISOString()
       };
       const d = seal(pair.publicRaw.toString("base64"), header, op === "set" ? value : "");
       return { ...d, ...over };
@@ -258,6 +259,35 @@ describe("the controller delivers credentials entered through SCP into the backe
       req: { outcome: "applied", seq: second.seq }
     });
     expect(r.kube.managers.length).toBe(writes);
+  });
+
+  it("a REBUILT scpd (its sequence restarted, found on kind) is not mistaken for a replay: deliveries are ordered by when they were sealed", async () => {
+    const r = rig();
+    await r.tick();
+    r.pending.push(
+      await r.sealed({ secretName: "scp-build-registry", key: "registryPassword" }, "before")
+    );
+    await r.tick();
+    // A restored or rebuilt database starts its sequence again; its clock does not go back.
+    const pair = await loadOrCreateSealingKey(new KubeClient(r.kube), STACKD_NS);
+    const d = seal(
+      pair.publicRaw.toString("base64"),
+      {
+        deliveryId: randomUUID(),
+        seq: 1,
+        backend: "argo-workflows",
+        secretName: "scp-build-registry",
+        key: "registryPassword",
+        op: "set",
+        keyId: pair.keyId,
+        notAfter: new Date(Date.now() + 120_000).toISOString()
+      },
+      "after"
+    );
+    r.pending.push(d);
+    await r.tick();
+    expect(r.secret()["registryPassword"]).toBe("after");
+    expect(r.acks.at(-1)).toEqual({ id: d.deliveryId, req: { outcome: "applied", seq: 1 } });
   });
 
   it("a REDIRECTED envelope — its target, op or sequence rewritten — fails the tag and is refused; nothing is written anywhere", async () => {
