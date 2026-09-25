@@ -726,7 +726,7 @@ jobs:
       - name: Pull the pre-built runner images (in parallel — the pulls share no layers)
         run: |
           pids=""
-          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF" "$SCP_BUILDER_RPM_IMAGE_REF" "$SCP_STACKD_IMAGE_REF"; do
+          for ref in "$SCP_RUNNER_SCAN_IMAGE_REF" "$SCP_RUNNER_IAC_IMAGE_REF" "$SCP_RUNNER_DEP_IMAGE_REF" "$SCP_RUNNER_DEP_VENDOR_IMAGE_REF" "$SCP_RUNNER_OPS_IMAGE_REF" "$SCP_SSHD_FIXTURE_IMAGE_REF" "$SCP_BUILDER_RPM_IMAGE_REF" "$SCP_STACKD_IMAGE_REF"; do
             docker pull "$ref" & pids="$pids $!"
           done
           # `wait` PER PID, not a bare `wait`: a bare one exits 0 even when a pull failed.

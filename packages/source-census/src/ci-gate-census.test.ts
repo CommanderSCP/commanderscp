@@ -159,10 +159,27 @@ describe("every test-tier image ref is published, pulled, and passed through", (
     expect(workflow).toContain(`build_and_push "$${ref}"`);
   });
 
+  // Scoped to the `for ref in ...` LINE ITSELF, not "anywhere in ci.yml" — a ref that only
+  // appears in the publish job's `build_and_push "$REF" ...` call (which every ref in `refs`
+  // does, by construction) would satisfy an unscoped `workflow.toContain` check while still being
+  // absent from the pull loop: exactly the SCP_RUNNER_DEP_VENDOR_IMAGE_REF gap found by the
+  // 2026-09-25 merge of #420 and #421 (the image was published, but never pulled locally by the
+  // integration-shard job, so its test fell back to a slow/hanging repo-root `docker build`
+  // instead of a GHCR pull). Vacuous otherwise: it would pass whether or not the pull loop agreed.
+  const pullLoopLine = (() => {
+    const m = /for ref in ((?:"\$SCP_[A-Z_]+_IMAGE_REF" ?)+); do/.exec(workflow);
+    if (!m) throw new Error("ci-gate-census: could not find the integration job's pull loop line");
+    return m[1]!;
+  })();
+
+  it("the census read the pull loop (it is not an empty match)", () => {
+    expect(pullLoopLine.length).toBeGreaterThan(0);
+  });
+
   it.each(refs)("%s is pulled by the integration job", (ref) => {
     // The pull loop names each ref explicitly; a ref missing from it is an image the test tier
     // never has locally, and the blackhole makes that a hard failure rather than a slow pull.
-    expect(workflow).toContain(`"$${ref}"`);
+    expect(pullLoopLine).toContain(`"$${ref}"`);
   });
 
   it.each(refs)("%s survives turbo's STRICT env mode", (ref) => {
