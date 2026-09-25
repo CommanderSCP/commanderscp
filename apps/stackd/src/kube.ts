@@ -189,6 +189,18 @@ export class KubeClient {
     });
   }
 
+  /** A JSON merge patch — only for the one field the controller sets outside a render (the
+   *  rotation annotation that rolls argo-server onto a new certificate, `wiring.ts`). */
+  async mergePatch(ref: ObjectRef, patch: Record<string, unknown>): Promise<void> {
+    const path = await this.pathFor(ref);
+    await this.call({
+      method: "PATCH",
+      path: `${path}?fieldManager=${FIELD_MANAGER}-rotation`,
+      body: JSON.stringify(patch),
+      contentType: "application/merge-patch+json"
+    });
+  }
+
   async get(ref: ObjectRef): Promise<KubeObject | null> {
     let path: string;
     try {

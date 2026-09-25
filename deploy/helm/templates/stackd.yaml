@@ -148,6 +148,11 @@ spec:
               value: {{ .Values.stackd.readyTimeoutSeconds | quote }}
             - name: SCP_STACKD_RESYNC_SECONDS
               value: {{ .Values.stackd.resyncSeconds | quote }}
+            # M29.2 (ADR-0061): the labels that select scpd's api and worker pods — the subject of
+            # the egress NetworkPolicy the controller writes for each backend it wires. The chart's
+            # own selector labels, so they cannot drift from the pods they must select.
+            - name: SCP_STACKD_SCP_POD_LABELS
+              value: {{ include "commanderscp.selectorLabels" . | fromYaml | toJson | quote }}
           ports:
             - name: health
               containerPort: 8081
@@ -184,7 +189,7 @@ spec:
 {{- end }}
 {{- end }}
 {{- if not $kubeApiCidrs }}
-{{- /* Offline render (`helm template`, no cluster): the private ranges, as the auto-wire hook policy. */}}
+{{- /* Offline render (`helm template`, no cluster): the private ranges, as allow-kube-api-runner. */}}
 {{- $kubeApiCidrs = list "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" }}
 {{- end }}
 ---
@@ -192,8 +197,9 @@ spec:
 The controller's network (review N3): DNS; the Kubernetes API — `networkPolicy.kubeApi.cidrs` when
 set, else the API server's own addresses read from the cluster at install time (/32s; it is
 host-networked and matched post-DNAT, see networkpolicy.yaml), else, on an offline render only, the
-private ranges; and scpd's API pods, by namespace AND pod labels. Nothing else: it never talks to a
-backend directly, and it has no route to Postgres. Its namespace holds no chart-wide policy.
+private ranges; scpd's API pods, by namespace AND pod labels; and (M29.2) the two backend APIs it
+mints scoped tokens on, Argo CD's and Gitea's, in the backend namespaces only. Nothing else: no route
+to Postgres, none to the internet. Its namespace holds no chart-wide policy.
 */}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -231,5 +237,20 @@ spec:
               {{- include "commanderscp.apiSelectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 8080 }
+    {{- /* M29.2 (ADR-0061): minting a backend's scoped token needs that backend's own API — Argo
+           CD's (argocd-server's container port 8080) and Gitea's (3000), in their own namespaces
+           only. Argo Workflows' token is a ServiceAccount token, read through the API server. */}}
+    - to:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  {{- range .Values.stackd.backendNamespaces }}
+                  - {{ . | quote }}
+                  {{- end }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 3000 }
 {{- end }}
 {{- end }}

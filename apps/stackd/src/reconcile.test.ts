@@ -142,9 +142,11 @@ function harness(): Harness {
       backend,
       enabled: false,
       sizeTier: "small",
-      purgeGeneration: 0
+      purgeGeneration: 0,
+      rotateGeneration: 0
     })),
-    integrity: []
+    integrity: [],
+    wiring: []
   };
   // scpd's side: the status row keeps the digests of the latest report, and the spec hands them
   // back as `integrity` (apps/server routes/stack.ts).
@@ -172,7 +174,9 @@ function harness(): Harness {
             inventorySha256: b.inventorySha256
           });
         }
-      }
+      },
+      putWiring: async () => undefined,
+      deleteWiring: async () => undefined
     },
     kube: client,
     helm,
@@ -524,7 +528,9 @@ describe("the stack controller's reconcile", () => {
         calls += 1;
         throw new Error("ECONNREFUSED");
       },
-      putStatus: async () => undefined
+      putStatus: async () => undefined,
+      putWiring: async () => undefined,
+      deleteWiring: async () => undefined
     };
     const controller = startStackController(h.deps, { intervalMs: 1 });
     await controller.firstTick;
@@ -804,5 +810,76 @@ describe("the stack controller's reconcile", () => {
     enable(h, "argo-events", false);
     await reconcileStack(h.deps);
     expect(h.kube.find("ConfigMap", "elsewhere", "scp")).toBeDefined();
+  });
+
+  // ---- M29.2: the auto-wire hooks -----------------------------------------------------------------
+
+  it("M29.2: a healthy backend is wired in the SAME reconcile, with scpd's record of its wiring; what did not wire is a need", async () => {
+    const h = harness();
+    const seen: { backend: string; recorded: unknown; rotate: number }[] = [];
+    h.deps.afterReady = async (backend, _objects, ctx) => {
+      seen.push({ backend, recorded: ctx.recorded, rotate: ctx.spec.rotateGeneration });
+      return [{ code: "wiring", message: "token mint pending" }];
+    };
+    const recorded = {
+      backend: "argo-events" as const,
+      factsSha256: "f".repeat(64),
+      rotationGeneration: 0
+    };
+    const specFn = h.deps.api.spec;
+    h.deps.api.spec = async () => ({ ...(await specFn()), wiring: [recorded] });
+    enable(h, "argo-events");
+    await reconcileStack(h.deps);
+    expect(seen).toEqual([{ backend: "argo-events", recorded, rotate: 0 }]);
+    expect(last(h, "argo-events")).toMatchObject({
+      phase: "ready",
+      needs: [{ code: "wiring", message: "token mint pending" }]
+    });
+    // Steady ticks keep wiring (idempotently): the hook runs again on the next ready tick.
+    await reconcileStack(h.deps);
+    expect(seen).toHaveLength(2);
+  });
+
+  it("M29.2: disabling UNWIRES before anything is removed, and a failed unwire never keeps a disabled backend running", async () => {
+    const h = harness();
+    const events: string[] = [];
+    h.deps.unwire = async (backend, ctx) => {
+      events.push(`unwire ${backend} wasWired=${ctx.wasWired}`);
+      // At this moment the workloads must still exist.
+      events.push(
+        h.kube.find("Deployment", "controller", "scp-argo-events")
+          ? "deployment present"
+          : "deployment gone"
+      );
+      throw new Error("scpd unreachable");
+    };
+    enable(h, "argo-events");
+    await reconcileStack(h.deps);
+    enable(h, "argo-events", false);
+    await reconcileStack(h.deps);
+    expect(events).toEqual(["unwire argo-events wasWired=false", "deployment present"]);
+    expect(h.kube.find("Deployment", "controller", "scp-argo-events")).toBeUndefined();
+    expect(last(h, "argo-events").phase).toBe("disabled");
+  });
+
+  it("M29.2: a disabled backend scpd still holds a wiring for is unwired until scpd drops it", async () => {
+    const h = harness();
+    const calls: string[] = [];
+    h.deps.unwire = async (backend, ctx) => {
+      calls.push(`${backend}:${ctx.wasWired}`);
+    };
+    const specFn = h.deps.api.spec;
+    let held = true;
+    h.deps.api.spec = async () => ({
+      ...(await specFn()),
+      wiring: held
+        ? [{ backend: "gitea" as const, factsSha256: "e".repeat(64), rotationGeneration: 0 }]
+        : []
+    });
+    await reconcileStack(h.deps);
+    expect(calls).toEqual(["gitea:true"]);
+    held = false;
+    await reconcileStack(h.deps);
+    expect(calls).toEqual(["gitea:true"]);
   });
 });

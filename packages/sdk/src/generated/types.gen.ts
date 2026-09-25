@@ -19033,12 +19033,22 @@ export type GetStackResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
                     message: string;
                 }>;
                 observedAt: string;
             } | null;
+            rotateGeneration: number;
+            wiring: {
+                wired: boolean;
+                serverUrl: string | null;
+                caSha256: string | null;
+                account: string | null;
+                wiredAt: string | null;
+                rotationGeneration: number | null;
+            } | null;
         }>;
+        servesThisOrg: boolean | null;
     };
 };
 
@@ -19131,12 +19141,22 @@ export type PutStackBackendResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
                     message: string;
                 }>;
                 observedAt: string;
             } | null;
+            rotateGeneration: number;
+            wiring: {
+                wired: boolean;
+                serverUrl: string | null;
+                caSha256: string | null;
+                account: string | null;
+                wiredAt: string | null;
+                rotationGeneration: number | null;
+            } | null;
         }>;
+        servesThisOrg: boolean | null;
     };
 };
 
@@ -19226,12 +19246,22 @@ export type PurgeStackBackendResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
                     message: string;
                 }>;
                 observedAt: string;
             } | null;
+            rotateGeneration: number;
+            wiring: {
+                wired: boolean;
+                serverUrl: string | null;
+                caSha256: string | null;
+                account: string | null;
+                wiredAt: string | null;
+                rotationGeneration: number | null;
+            } | null;
         }>;
+        servesThisOrg: boolean | null;
     };
 };
 
@@ -19321,12 +19351,22 @@ export type PutStackSettingsResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
                     message: string;
                 }>;
                 observedAt: string;
             } | null;
+            rotateGeneration: number;
+            wiring: {
+                wired: boolean;
+                serverUrl: string | null;
+                caSha256: string | null;
+                account: string | null;
+                wiredAt: string | null;
+                rotationGeneration: number | null;
+            } | null;
         }>;
+        servesThisOrg: boolean | null;
     };
 };
 
@@ -19414,12 +19454,22 @@ export type RequestStackUpgradeResponses = {
                 targetVersion: string | null;
                 lastError: string | null;
                 needs: Array<{
-                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
                     message: string;
                 }>;
                 observedAt: string;
             } | null;
+            rotateGeneration: number;
+            wiring: {
+                wired: boolean;
+                serverUrl: string | null;
+                caSha256: string | null;
+                account: string | null;
+                wiredAt: string | null;
+                rotationGeneration: number | null;
+            } | null;
         }>;
+        servesThisOrg: boolean | null;
     };
 };
 
@@ -19487,12 +19537,22 @@ export type GetStackDiagnosticsResponses = {
                     targetVersion: string | null;
                     lastError: string | null;
                     needs: Array<{
-                        code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
+                        code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
                         message: string;
                     }>;
                     observedAt: string;
                 } | null;
+                rotateGeneration: number;
+                wiring: {
+                    wired: boolean;
+                    serverUrl: string | null;
+                    caSha256: string | null;
+                    account: string | null;
+                    wiredAt: string | null;
+                    rotationGeneration: number | null;
+                } | null;
             }>;
+            servesThisOrg: boolean | null;
         };
         backends: Array<{
             backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
@@ -19551,11 +19611,17 @@ export type GetStackSpecResponses = {
             enabled: boolean;
             sizeTier: 'small' | 'medium' | 'large';
             purgeGeneration: number;
+            rotateGeneration: number;
         }>;
         integrity: Array<{
             backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
             lastGoodSha256: string | null;
             inventorySha256: string | null;
+        }>;
+        wiring: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            factsSha256: string | null;
+            rotationGeneration: number | null;
         }>;
     };
 };
@@ -19573,7 +19639,7 @@ export type PutStackStatusData = {
             targetVersion: string | null;
             lastError: string | null;
             needs: Array<{
-                code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity';
+                code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
                 message: string;
             }>;
             detail: Array<string>;
@@ -19621,6 +19687,447 @@ export type PutStackStatusResponses = {
 };
 
 export type PutStackStatusResponse = PutStackStatusResponses[keyof PutStackStatusResponses];
+
+export type DeleteStackWiringData = {
+    body?: never;
+    path: {
+        backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+    };
+    query?: never;
+    url: '/instance/stack/backends/{backend}/wiring';
+};
+
+export type DeleteStackWiringErrors = {
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeleteStackWiringError = DeleteStackWiringErrors[keyof DeleteStackWiringErrors];
+
+export type DeleteStackWiringResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type DeleteStackWiringResponse = DeleteStackWiringResponses[keyof DeleteStackWiringResponses];
+
+export type PutStackWiringData = {
+    body: {
+        serverUrl: string | null;
+        namespace: string | null;
+        caPem: string | null;
+        account: string | null;
+        token: string | null;
+        factsSha256: string;
+        rotationGeneration: number;
+    };
+    path: {
+        backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+    };
+    query?: never;
+    url: '/instance/stack/backends/{backend}/wiring';
+};
+
+export type PutStackWiringErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutStackWiringError = PutStackWiringErrors[keyof PutStackWiringErrors];
+
+export type PutStackWiringResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type PutStackWiringResponse = PutStackWiringResponses[keyof PutStackWiringResponses];
+
+export type RotateStackBackendData = {
+    body?: never;
+    path: {
+        backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+    };
+    query?: never;
+    url: '/instance/stack/backends/{backend}/rotate';
+};
+
+export type RotateStackBackendErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RotateStackBackendError = RotateStackBackendErrors[keyof RotateStackBackendErrors];
+
+export type RotateStackBackendResponses = {
+    /**
+     * Success
+     */
+    200: {
+        settings: {
+            updatePolicy: 'automatic' | 'manual';
+            upgradeGeneration: number;
+        };
+        controller: {
+            release: string | null;
+            lastSeenAt: string | null;
+            reporting: boolean;
+            observedUpgradeGeneration: number | null;
+        };
+        backends: Array<{
+            backend: 'argocd' | 'argo-workflows' | 'argo-rollouts' | 'argo-events' | 'gitea';
+            enabled: boolean;
+            sizeTier: 'small' | 'medium' | 'large';
+            purgeGeneration: number;
+            status: {
+                phase: 'installing' | 'ready' | 'degraded' | 'upgrading' | 'failed' | 'removing' | 'disabled';
+                runningVersion: string | null;
+                targetVersion: string | null;
+                lastError: string | null;
+                needs: Array<{
+                    code: 'infra-state-backend' | 'infra-runner-image' | 'rpm-builder-image' | 'upgrade-approval' | 'upgrade-rolled-back' | 'data-retained' | 'state-integrity' | 'wiring';
+                    message: string;
+                }>;
+                observedAt: string;
+            } | null;
+            rotateGeneration: number;
+            wiring: {
+                wired: boolean;
+                serverUrl: string | null;
+                caSha256: string | null;
+                account: string | null;
+                wiredAt: string | null;
+                rotationGeneration: number | null;
+            } | null;
+        }>;
+        servesThisOrg: boolean | null;
+    };
+};
+
+export type RotateStackBackendResponse = RotateStackBackendResponses[keyof RotateStackBackendResponses];
+
+export type ListStackServedOrgsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/stack/orgs';
+};
+
+export type ListStackServedOrgsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListStackServedOrgsError = ListStackServedOrgsErrors[keyof ListStackServedOrgsErrors];
+
+export type ListStackServedOrgsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            orgId: string;
+            orgName: string;
+            attachedAt: string;
+            attachedBy: {
+                mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                orgId: string | null;
+                userId: string | null;
+                username: string | null;
+                credentialId: string | null;
+            };
+        }>;
+    };
+};
+
+export type ListStackServedOrgsResponse = ListStackServedOrgsResponses[keyof ListStackServedOrgsResponses];
+
+export type DetachStackServedOrgData = {
+    body?: never;
+    path: {
+        orgId: string;
+    };
+    query?: never;
+    url: '/instance/stack/orgs/{orgId}';
+};
+
+export type DetachStackServedOrgErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DetachStackServedOrgError = DetachStackServedOrgErrors[keyof DetachStackServedOrgErrors];
+
+export type DetachStackServedOrgResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            orgId: string;
+            orgName: string;
+            attachedAt: string;
+            attachedBy: {
+                mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                orgId: string | null;
+                userId: string | null;
+                username: string | null;
+                credentialId: string | null;
+            };
+        }>;
+    };
+};
+
+export type DetachStackServedOrgResponse = DetachStackServedOrgResponses[keyof DetachStackServedOrgResponses];
+
+export type AttachStackServedOrgData = {
+    body?: never;
+    path: {
+        orgId: string;
+    };
+    query?: never;
+    url: '/instance/stack/orgs/{orgId}';
+};
+
+export type AttachStackServedOrgErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type AttachStackServedOrgError = AttachStackServedOrgErrors[keyof AttachStackServedOrgErrors];
+
+export type AttachStackServedOrgResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            orgId: string;
+            orgName: string;
+            attachedAt: string;
+            attachedBy: {
+                mechanism: 'session-role' | 'credential' | 'bootstrap-env-token' | 'install';
+                orgId: string | null;
+                userId: string | null;
+                username: string | null;
+                credentialId: string | null;
+            };
+        }>;
+    };
+};
+
+export type AttachStackServedOrgResponse = AttachStackServedOrgResponses[keyof AttachStackServedOrgResponses];
 
 export type GetInstanceOperatorSelfData = {
     body?: never;

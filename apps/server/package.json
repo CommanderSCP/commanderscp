@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests ${SCP_INTEGRATION_SHARD:-}",
-    "test:kind": "vitest run --config vitest.kind.config.ts",
+    "test:kind": "../../scripts/kind-runner-harness.sh in-cluster-net ./node_modules/.bin/vitest run --config vitest.kind.config.ts",
     "openapi:emit": "tsx src/openapi-emit.ts",
     "db:generate": "drizzle-kit generate",
     "seed": "tsx src/seed.ts",

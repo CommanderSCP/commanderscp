@@ -756,55 +756,28 @@ scanDbCache:
 # block renders nothing (the "never load-bearing / two-container floor" guarantee — helm-verify
 # asserts no Valkey/Argo CD is emitted with the profile off).
 # -------------------------------------------------------------------------------------------
-# Bundled executor backends (Mode B, ADR-0002) — the FULL definitions (vendored manifests, images)
-# live in the SEPARATE `deploy/helm-bundled` chart, applied out-of-release via
-# scripts/scp-bundled.sh (the vendored manifests exceed Helm's 1 MB release-Secret limit; see
-# deploy/helm-bundled/Chart.yaml). This MAIN chart keeps only the SLIM knobs its own resources use:
-# the post-install auto-wire hook (templates/bundled-argocd-autowire-job.yaml) and the
-# allow-argocd NetworkPolicy egress rule (templates/networkpolicy.yaml). Enabling a
-# backend flips the matching `enabled` here (turns on the hook + egress) AND applies the bundled
-# chart — `scripts/scp-bundled.sh enable <backend>` does both in one command.
+# Bundled executor backends (Mode B, ADR-0002) have NO values in this chart any more (M29.2,
+# ADR-0061). The stack controller (`stackd` above) installs them from `deploy/helm-bundled`, which it
+# carries in its image, and WIRES each one into SCP in the same reconcile: the scoped account's token,
+# the TLS trust, both egress layers and the execution-system registration, with no hook Job, no
+# `helm upgrade` flag and no command to copy. The `bundledExecutor.{argocd,gitea,argoWorkflows}`
+# block that used to live here only switched on the old install-time auto-wire hooks and three
+# `allow-<backend>` NetworkPolicies — a second and third place to declare what the controller
+# knows — and is removed. (Its Argo Workflows comment was also wrong: the vendored argo-server runs
+# `--auth-mode=client`, so every call carries the scoped `scp-coordinator` ServiceAccount's token;
+# the controller mints and hands over exactly that token.) Enable a backend with `scp stack enable
+# <backend>` or on Admin › Stack.
 # NOTE: Harbor is REMOVED from the bundled stack (Gitea is the default registry, ADR-0012); an
 # existing Harbor is served via the import path (coordinated as an execution system), not bundled.
-bundledExecutor:
-  argocd:
-    enabled: false
-    namespace: scp-argocd
-    scpAccount: scp-coordinator
-  # Bundled Gitea (Mode B — the DEFAULT unified registry, ADR-0012). SLIM block: the vendored render
-  # lives in deploy/helm-bundled; here we only carry the enabled flag + namespace + scoped account
-  # so the MAIN chart can turn on the SCP-side integration (auto-wire hook + allow-gitea egress).
-  gitea:
-    enabled: false
-    namespace: scp-gitea
-    scpAccount: scp-gitea-admin
-  # Bundled Argo Workflows (Mode B — the CI/build/TEST backend, and the executor D11's coordinated
-  # test hooks run on). SLIM BLOCK, exactly like `gitea` above: the vendored render lives in
-  # deploy/helm-bundled; the main chart carries only what the SCP-SIDE integration needs — the
-  # enabled flag and the namespace — so `allow-argo-workflows` egress can be rendered.
-  #
-  # NO `scpAccount`, and no auto-wire hook, DELIBERATELY: upstream's vendored argo-server runs with
-  # `args: [server]` and therefore Argo Workflows' DEFAULT auth mode, which is `server` — the API
-  # server performs Kubernetes operations as its OWN ServiceAccount and does not require a per-client
-  # bearer token. There is no scoped token to mint, so a token-minting hook of the kind argocd and
-  # gitea need would create a credential nothing consumes. The plugin's `tokenSecretKey` stays
-  # optional for the BYO case, where an operator's own instance runs `--auth-mode=client|sso` and
-  # does require one.
-  #
-  # ACCESS CONTROL IS THEREFORE NETWORK-LEVEL for the bundled instance: anything that can reach
-  # argo-server can drive it. That is upstream's documented posture for `server` auth mode, and it is
-  # why the egress allow below is a precise namespaceSelector on a single port rather than anything
-  # broader — the NetworkPolicy is the control, so it has to be tight.
-  argoWorkflows:
-    enabled: false
-    namespace: scp-argo-workflows
 
 # -------------------------------------------------------------------------------------------
 # Executor TLS trust (SCP_EXECUTOR_TLS_CA_FILE) — an ADDITIONAL CA bundle plugin subprocesses
 # verify execution-system endpoints against, for backends serving HTTPS with a private or
 # self-signed certificate. The bundled Argo Workflows server is the case that forced it: it listens
 # on 2746 with a self-signed cert, so #321's NetworkPolicy opened the network and every request
-# still failed verification.
+# still failed verification. SINCE M29.2 (ADR-0061) THE BUNDLED BACKENDS NEED NONE OF THIS: the
+# stack controller hands scpd the CA of each backend it wires, and scpd trusts it for that
+# registration alone. This setting remains for a BYO (Mode A) executor behind a private CA.
 #
 # THIS EXTENDS TRUST, IT NEVER DISABLES IT. There is deliberately no insecure/skip-verify option
 # anywhere on this path: a certificate chaining to neither the system roots nor this bundle is still
@@ -1094,6 +1067,10 @@ containerSecurityContext:
 # listed here is reachable by any execution-system in this deployment that points at it (this bounds
 # the deployment; it does not isolate tenants from each other — same granularity as the NetworkPolicy
 # below, which you almost certainly want to configure at the same time via `networkPolicy.executorEgress`).
+#
+# NOT FOR THE BUNDLED BACKENDS (M29.2, ADR-0061): the stack controller wires those, and their
+# allowance comes from its own knowledge of each endpoint, for that registration only. Do NOT list a
+# bundled Service here — doing so would let ANY execution system in this deployment reach it.
 #
 # internalEgressHosts:
 #   - argocd-server.argocd.svc.cluster.local

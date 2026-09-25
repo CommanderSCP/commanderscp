@@ -63,6 +63,8 @@ export interface ChecklistRowView {
   hint?: string;
   to: string;
   actionLabel: string;
+  /** Further wizards for the same row (M29.2: an EXISTING Gitea beside Argo CD). */
+  more?: { to: string; label: string; testId: string }[];
   testId: string;
 }
 
@@ -87,10 +89,12 @@ export function buildChecklistRows(data: SetupChecklistData): ChecklistRowView[]
       key: "execution-systems",
       icon: Link2,
       label: "Execution systems",
-      description: "Argo CD, Gitea, or GitLab, each with its own connect wizard.",
+      description:
+        "Argo CD, Gitea, or GitLab, each with its own connect wizard. The Standard Stack's bundled backends register themselves.",
       count: data.executionSystems?.items.length,
       to: "/connect/argocd",
       actionLabel: "Connect Argo CD",
+      more: [{ to: "/connect/gitea", label: "Connect Gitea", testId: "setup-row-connect-gitea" }],
       testId: "setup-row-execution-systems"
     },
     {
@@ -196,6 +200,11 @@ function ChecklistRow({ row }: { row: ChecklistRowView }): React.JSX.Element {
             {row.count}
           </span>
         )}
+        {(row.more ?? []).map((m) => (
+          <LinkButton key={m.to} to={m.to} testId={m.testId}>
+            {m.label}
+          </LinkButton>
+        ))}
         <LinkButton to={row.to} testId={`${row.testId}-link`}>
           {row.actionLabel}
         </LinkButton>

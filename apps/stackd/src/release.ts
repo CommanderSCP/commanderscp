@@ -25,8 +25,10 @@ export const VALUES_KEY: Record<StackBackend, string> = {
 export const RETARGETABLE_IMAGE_PATHS: readonly string[] = [
   "argocd.image",
   "argocd.valkeyImage",
+  "argocd.dexImage",
   "argoWorkflows.serverImage",
   "argoWorkflows.controllerImage",
+  "argoWorkflows.executorImage",
   "argoWorkflows.catalog.buildImage.builderImage",
   "argoWorkflows.catalog.buildImage.gitImage",
   "argoWorkflows.catalog.buildRpm.builderImage",

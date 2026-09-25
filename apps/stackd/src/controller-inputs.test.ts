@@ -14,8 +14,11 @@ import { describe, expect, it } from "vitest";
  *      tier (apps/server `stack.integration.test.ts`, drizzle/0126);
  *   2. its own image (chart, helm pin) and deploy-time env / image-retarget file (`release.ts`,
  *      `values.test.ts`'s census).
- * This file holds the SOURCE to (1): the controller builds one API client, uses two operations on
- * it — read the spec, write the status — and has no other network path to scpd.
+ * This file holds the SOURCE to (1): the controller builds one API client, uses four operations on
+ * it — read the spec, write the status, and (M29.2) hand a wiring over and withdraw it — and has no
+ * other network path to scpd. And to the one thing M29.2 added that reaches OUT: the client for the
+ * backends' own APIs (`backend-http.ts`) is called only by `wiring.ts`, and only with URLs built
+ * from an endpoint the controller derived from its own render.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -47,14 +50,19 @@ describe("the stack controller's inputs", () => {
     expect(ctor.replace(/\s/g, "")).toBe("{baseUrl}");
   });
 
-  it("calls exactly two API operations: the spec read and the status write", () => {
+  it("calls exactly four API operations: the spec read, the status write, the wiring hand-off and its withdrawal", () => {
     const calls = new Set<string>();
     for (const s of sources) {
       for (const m of code(s.text).matchAll(/client\.(\w+)\.(\w+)\(/g))
         calls.add(`${m[1]}.${m[2]}`);
       for (const m of code(s.text).matchAll(/client\.(\w+)\(/g)) calls.add(m[1]!);
     }
-    expect([...calls].sort()).toEqual(["stack.putStatus", "stack.spec"]);
+    expect([...calls].sort()).toEqual([
+      "stack.deleteWiring",
+      "stack.putStatus",
+      "stack.putWiring",
+      "stack.spec"
+    ]);
   });
 
   it("has no other way to reach scpd: no fetch, no undici, no ad-hoc HTTP client to the API", () => {
@@ -63,12 +71,32 @@ describe("the stack controller's inputs", () => {
       expect(c, `${s.file} calls fetch`).not.toMatch(/\bfetch\(/);
       expect(c, `${s.file} imports undici`).not.toMatch(/from "undici"/);
     }
-    // node:http(s) is the Kubernetes transport and the health server — and only there.
+    // node:http(s) is the Kubernetes transport, the health server and (M29.2) the backends' own
+    // APIs — and only there.
     const httpUsers = sources
       .filter((s) => /from "node:https?"/.test(code(s.text)))
       .map((s) => s.file)
       .sort();
-    expect(httpUsers).toEqual(["kube.ts", "main.ts"]);
+    expect(httpUsers).toEqual(["backend-http.ts", "kube.ts", "main.ts"]);
+  });
+
+  it("the backend HTTP client is used only by wiring.ts, and only against an endpoint derived from the render", () => {
+    const users = sources
+      .filter(
+        (s) =>
+          s.file !== "backend-http.ts" &&
+          /\bnodeBackendHttp\(|\.http\b|requireHttp\(/.test(code(s.text))
+      )
+      .map((s) => s.file)
+      .sort();
+    // controller.ts constructs it; wiring.ts is its only caller.
+    expect(users).toEqual(["controller.ts", "wiring.ts"]);
+    const wiring = code(sources.find((s) => s.file === "wiring.ts")!.text);
+    const urls = [...wiring.matchAll(/\burl:\s*([^,\n]+)/g)].map((m) => m[1]!.trim());
+    expect(urls.length).toBeGreaterThan(5);
+    for (const u of urls) expect(u, u).toMatch(/^`\$\{ep\.serverUrl\}\//);
+    // …and `ep` only ever comes from backendEndpoint (the render) or the unwire's fixed Service.
+    expect(wiring).toMatch(/const ep = backendEndpoint\(deps\.release, backend, objects\)/);
   });
 
   it("reads from the spec only its enumerated fields: backend, enabled, sizeTier, purgeGeneration, the settings and the integrity digests", () => {
@@ -92,6 +120,11 @@ describe("the stack controller's inputs", () => {
       "integrity",
       "settings.updatePolicy",
       "settings.upgradeGeneration",
+      // M29.2: a counter — a rotation acts only when it exceeds what the recorded wiring satisfied.
+      "rotateGeneration",
+      // M29.2: per backend, a sha256 and a counter (stack-spec-census) — compared with the hash of
+      // facts the controller derives itself; it can make the controller re-wire, never re-point.
+      "wiring",
       "group",
       "versions",
       "replicas",

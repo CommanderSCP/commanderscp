@@ -2682,6 +2682,9 @@ export const stackBackends = pgTable(
     sizeTier: text("size_tier").notNull().default("small"),
     /** Bumped by the purge door; a disabled backend keeps its data until the controller sees it. */
     purgeGeneration: integer("purge_generation").notNull().default(0),
+    /** M29.2 — bumped by the rotate door; the controller re-mints the backend's scoped token (and
+     *  argo-server's certificate) when it exceeds what the recorded wiring satisfied. */
+    rotateGeneration: integer("rotate_generation").notNull().default(0),
     specUpdatedAt: timestamp("spec_updated_at", { withTimezone: true }).notNull().defaultNow(),
     phase: text("phase"),
     runningVersion: text("running_version"),
@@ -2722,12 +2725,110 @@ export const stackSettings = pgTable(
     controllerSeenAt: timestamp("controller_seen_at", { withTimezone: true }),
     /** The install-time controller credential this deployment provisioned — what a rotation
      *  revokes (by id, never by name). */
-    controllerCredentialId: uuid("controller_credential_id")
+    controllerCredentialId: uuid("controller_credential_id"),
+    /** M29.2 — true once the bootstrap organization has been served by default (on the first
+     *  wiring). Never set back: an operator who detaches it later is not overruled. */
+    servedOrgsInitialized: boolean("served_orgs_initialized").notNull().default(false)
   },
   (t) => [
     check("stack_settings_singleton_ck", sql`${t.id} = 'instance'`),
     check("stack_settings_update_policy_ck", sql`${t.updatePolicy} IN ('automatic', 'manual')`),
     check("stack_settings_upgrade_generation_ck", sql`${t.upgradeGeneration} >= 0`)
+  ]
+);
+
+/**
+ * HOW EACH BUNDLED BACKEND IS WIRED INTO SCP (M29.2, ADR-0061) — the facts the stack controller
+ * handed over after the backend became healthy: the in-cluster endpoint from its own render, the CA
+ * that endpoint's certificate chains to, the scoped account. Instance-tier, tenant-read (the Stack
+ * page shows them), and written ONLY by the controller's credential through the operator
+ * connection. These — never an `execution-system` object's properties, which live in an org's graph
+ * — decide where a stack-registered system's triggers go, which CA scpd trusts for it and which
+ * host its application egress opens to (`stack/wired-systems.ts`).
+ */
+export const stackBackendWirings = pgTable(
+  "stack_backend_wirings",
+  {
+    backend: text("backend").primaryKey(),
+    serverUrl: text("server_url"),
+    namespace: text("namespace"),
+    caPem: text("ca_pem"),
+    caSha256: text("ca_sha256"),
+    account: text("account"),
+    factsSha256: text("facts_sha256").notNull(),
+    rotationGeneration: integer("rotation_generation").notNull().default(0),
+    wiredAt: timestamp("wired_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    check(
+      "stack_backend_wirings_backend_ck",
+      sql`${t.backend} IN ('argocd', 'argo-workflows', 'argo-events', 'gitea')`
+    )
+  ]
+);
+
+/**
+ * THE SCOPED TOKEN the controller minted for a backend, encrypted with the secrets master key (the
+ * `secrets` table's AES-256-GCM envelope). A table of its own, NOT a row in any org's secret store:
+ * an org's store is addressed BY KEY from tenant-writable execution-system properties, so a token
+ * stored there could be named by any system a tenant registers and sent wherever it points (the
+ * shape M28 kept finding). Tenant-read only from an org the stack serves (RLS), operator-write.
+ */
+export const stackBackendTokens = pgTable(
+  "stack_backend_tokens",
+  {
+    backend: text("backend").primaryKey(),
+    ciphertext: text("ciphertext").notNull(),
+    nonce: text("nonce").notNull(),
+    keyVersion: integer("key_version").notNull(),
+    mintedAt: timestamp("minted_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    check(
+      "stack_backend_tokens_backend_ck",
+      sql`${t.backend} IN ('argocd', 'argo-workflows', 'argo-events', 'gitea')`
+    )
+  ]
+);
+
+/**
+ * THE ORGANIZATIONS THE STANDARD STACK SERVES (M29.2). Every served org drives the SAME scoped
+ * backend accounts, so serving another org is an instance operator's decision, never an org's own
+ * (an org admin opting in would grant themselves reach over every other served org's
+ * applications). The bootstrap org is served by default. Tenant-read of the caller's own row only.
+ */
+export const stackServedOrgs = pgTable("stack_served_orgs", {
+  orgId: uuid("org_id")
+    .primaryKey()
+    .references(() => orgs.id, { onDelete: "cascade" }),
+  attachedBy: jsonb("attached_by").notNull(),
+  attachedAt: timestamp("attached_at", { withTimezone: true }).notNull().defaultNow()
+});
+
+/**
+ * WHICH `execution-system` OBJECT IS A BACKEND'S REGISTRATION IN AN ORG (M29.2). Written before the
+ * object (the object id is allocated here), so a registration is never "adopted" by name: an object
+ * a tenant created cannot become one. What makes a system stack-managed — the routing door refuses
+ * every other writer, and the resolver takes that system's routing from `stack_backend_wirings`,
+ * never from its properties. Operator-write, tenant-read of the caller's own org.
+ */
+export const stackBackendRegistrations = pgTable(
+  "stack_backend_registrations",
+  {
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    backend: text("backend").notNull(),
+    objectId: uuid("object_id").notNull(),
+    registeredAt: timestamp("registered_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    primaryKey({ columns: [t.orgId, t.backend], name: "stack_backend_registrations_pkey" }),
+    uniqueIndex("stack_backend_registrations_object_uq").on(t.objectId),
+    check(
+      "stack_backend_registrations_backend_ck",
+      sql`${t.backend} IN ('argocd', 'argo-workflows', 'argo-events', 'gitea')`
+    )
   ]
 );
 

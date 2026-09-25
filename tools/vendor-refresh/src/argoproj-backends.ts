@@ -69,7 +69,8 @@ export const ARGOPROJ_BACKENDS: Record<
     // NOT tracked, deliberately named rather than silently dropped: `public.ecr.aws/docker/library/
     // redis` (argocd.yaml retargets this to bundledExecutor.argocd.valkeyImage, an OWNED deviation —
     // never upstream's own version, so there is nothing for vendor-refresh to resolve against
-    // upstream here) and `ghcr.io/dexidp/dex` (genuinely untracked today — see the tool's README).
+    // upstream here) and `ghcr.io/dexidp/dex` (retargeted and bundled since M29.2, but on its own
+    // tag, which the sandbox cannot resolve; the chart fails the render when it drifts — see the README).
   },
   "argo-workflows": {
     upstreamRepo: "argoproj/argo-workflows",

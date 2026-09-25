@@ -27,6 +27,18 @@ function view(): StackView {
       enabled: backend === "argo-events",
       sizeTier: "small" as const,
       purgeGeneration: 0,
+      rotateGeneration: 0,
+      wiring:
+        backend === "argo-rollouts"
+          ? null
+          : {
+              wired: backend === "argo-events",
+              serverUrl: null,
+              caSha256: null,
+              account: null,
+              wiredAt: null,
+              rotationGeneration: null
+            },
       status:
         backend === "argo-events"
           ? {
@@ -38,7 +50,8 @@ function view(): StackView {
               observedAt: "2026-09-24T00:00:00.000Z"
             }
           : null
-    }))
+    })),
+    servesThisOrg: true
   };
 }
 
@@ -63,7 +76,17 @@ vi.mock("@scp/sdk", () => {
         calls.push({ method: "diagnostics", args }),
         { generatedAt: "now", stack: view(), backends: [] }
       ),
-      purge: async (...args: unknown[]) => (calls.push({ method: "purge", args }), view())
+      purge: async (...args: unknown[]) => (calls.push({ method: "purge", args }), view()),
+      rotate: async (...args: unknown[]) => (calls.push({ method: "rotate", args }), view()),
+      orgs: async (...args: unknown[]) => (calls.push({ method: "orgs", args }), { items: [] }),
+      attachOrg: async (...args: unknown[]) => (
+        calls.push({ method: "attachOrg", args }),
+        { items: [] }
+      ),
+      detachOrg: async (...args: unknown[]) => (
+        calls.push({ method: "detachOrg", args }),
+        { items: [] }
+      )
     };
     instanceOperators = {
       list: async (...args: unknown[]) => (
@@ -127,7 +150,19 @@ describe("scp stack", () => {
     const group = (await program()).commands.find((c) => c.name() === "stack");
     expect(group, "`scp stack` is missing").toBeDefined();
     expect(group!.commands.map((c) => c.name()).sort()).toEqual(
-      ["diagnostics", "disable", "enable", "purge", "status", "updates", "upgrade"].sort()
+      [
+        "attach",
+        "detach",
+        "diagnostics",
+        "disable",
+        "enable",
+        "orgs",
+        "purge",
+        "rotate",
+        "status",
+        "updates",
+        "upgrade"
+      ].sort()
     );
   });
 
@@ -172,6 +207,29 @@ describe("scp stack", () => {
       { method: "putBackend", args: ["gitea", { enabled: true }, undefined] },
       { method: "requestUpgrade", args: [undefined] }
     ]);
+  });
+
+  it("M29.2: rotate sends the backend and the credential; orgs/attach/detach reach their doors", async () => {
+    await run(["rotate", "argocd"]);
+    await run(["orgs"]);
+    await run(["attach", "0198f0a0-0000-7000-8000-000000000001"]);
+    await run(["detach", "0198f0a0-0000-7000-8000-000000000001", "--operator-token", "flag"]);
+    expect(calls).toEqual([
+      { method: "rotate", args: ["argocd", "op-token"] },
+      { method: "orgs", args: ["op-token"] },
+      { method: "attachOrg", args: ["0198f0a0-0000-7000-8000-000000000001", "op-token"] },
+      { method: "detachOrg", args: ["0198f0a0-0000-7000-8000-000000000001", "flag"] }
+    ]);
+    await expect(run(["rotate", "harbor"])).rejects.toThrow(/backend must be one of/);
+  });
+
+  it("M29.2: status shows each backend's wiring and whether this org is served", async () => {
+    await run(["status"]);
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join("\n");
+    expect(printed).toContain("this organization is served");
   });
 
   it("purge refuses without --i-understand-data-loss, before any call", async () => {

@@ -10,6 +10,7 @@ import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runne
 import { opsTemplateShapeProblems } from "@scp/plugin-argo-workflows";
 import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
 import { verifyStackController } from "./stackd.js";
+import { backendEndpoint, egressPolicy, loadRelease, type KubeObject } from "@scp/stackd";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
@@ -305,20 +306,13 @@ function chartGrantProblems(args: {
   const workloadName = workload[0]!;
   const expected = new Map<string, KubernetesRbacRule[]>();
   expected.set(workloadName, expectRunnerGrant ? [...kubernetesRunnerRbac({ perRunSecrets })] : []);
-  // THE INSTALL-TIME HOOKS. Pinned by SHAPE here rather than described: each reads exactly one
-  // generated admin Secret in the bundled backend's namespace to mint a scoped API token.
-  const AUTOWIRE_GRANT: KubernetesRbacRule[] = [
-    { apiGroup: "", resource: "secrets", verbs: ["get"] }
-  ];
-  for (const identity of [...effective.keys(), ...allPodServiceAccountNames(docs)]) {
-    if (identity.endsWith("-argocd-autowire") || identity.endsWith("-gitea-autowire")) {
-      expected.set(identity, AUTOWIRE_GRANT);
-    }
-  }
+  // M29.2: the two install-time auto-wire hook identities are GONE (the stack controller wires the
+  // bundled backends, and its own grants are gated by ./stackd.ts), so the workload ServiceAccount
+  // is the ONE identity this render may grant to.
   for (const identity of effective.keys()) {
     if (!expected.has(identity)) {
       say(
-        `'${identity}' is granted rules by this chart and is not one of the three identities it is supposed to have (the workload ServiceAccount and the two bundled-backend autowire hooks)`
+        `'${identity}' is granted rules by this chart and is not the one identity it is supposed to have (the workload ServiceAccount)`
       );
     }
   }
@@ -327,7 +321,7 @@ function chartGrantProblems(args: {
   for (const identity of allPodServiceAccountNames(docs)) {
     if (identity !== workloadName && !expected.has(identity)) {
       say(
-        `a pod in this render runs as '${identity}', which is neither the workload ServiceAccount nor one of the two pinned autowire hooks — a new identity inside the release that no grant assertion covers`
+        `a pod in this render runs as '${identity}', which is not the workload ServiceAccount — a new identity inside the release that no grant assertion covers`
       );
     }
   }
@@ -1575,7 +1569,7 @@ function verifySocketInvariantMatrix(): void {
     "verbs: ['*']",
     "names the cluster-scoped resource 'nodes'",
     "authorises nobody",
-    "is not one of the three identities"
+    "is not the one identity"
   ];
   for (const fragment of plantedNames) {
     assert(
@@ -1592,7 +1586,7 @@ function verifySocketInvariantMatrix(): void {
     `  ${points.length} value combinations: ${rendered} rendered clean, ${refused} refused by the chart's own guards as expected, ${runnerJobs} runner Job manifests derived from the rendered env and checked too — no hostPath and no runtime socket anywhere`
   );
   console.log(
-    `  and the WHOLE chart's RBAC grant checked on all ${grantsChecked} of them: no ClusterRole or ClusterRoleBinding, no wildcard, no escalate/bind/impersonate, every Role bound, and each of the three identities holding exactly its pinned set`
+    `  and the WHOLE chart's RBAC grant checked on all ${grantsChecked} of them: no ClusterRole or ClusterRoleBinding, no wildcard, no escalate/bind/impersonate, every Role bound, and the one workload identity holding exactly its pinned set`
   );
 }
 
@@ -1868,15 +1862,6 @@ interface LabelSelector {
   matchExpressions?: { key: string; operator: string; values?: string[] }[];
 }
 
-interface NpEgressRule {
-  to?: {
-    ipBlock?: { cidr?: string; except?: string[] };
-    namespaceSelector?: unknown;
-    podSelector?: unknown;
-  }[];
-  ports?: { protocol?: string; port?: number; endPort?: number }[];
-}
-
 /** Full Kubernetes LabelSelector semantics (matchLabels AND matchExpressions) against a concrete
  *  label set. Used to answer the question a name-based grep cannot: "does THIS policy actually
  *  select THAT pod?" — the exact question the air-gap regression turned on. */
@@ -1909,237 +1894,12 @@ function selectorSelects(sel: LabelSelector | undefined, labels: Record<string, 
   return true;
 }
 
-/** THE REACHABILITY CONSTRAINT this guard encodes. See docs/helm-verify.md §19. */
-const KUBE_API_ENDPOINT_PORT = 6443;
-const KUBE_API_REQUIRED_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
-
 /** A NetworkPolicy rule list carries NO ALLOW RULES — i.e. the policy DENIES that direction — when
  *  the field is absent OR an empty array. Kubernetes treats `egress:` (absent) and `egress: []` as
  *  identical; anything that recognises only one of the two can be evaded by writing the other.
  *  Shared by every default-deny detection in this file so the two can never drift apart again. */
 function hasNoAllowRules(v: unknown): boolean {
   return v === undefined || v === null || (Array.isArray(v) && v.length === 0);
-}
-
-type IpRange = [start: number, end: number];
-
-/** IPv4 CIDR -> inclusive [start,end] as unsigned 32-bit numbers. `undefined` for anything this can
- *  not reason about (IPv6, malformed) — which then never counts as coverage, so an unparseable CIDR
- *  can only make the guard STRICTER, never accidentally satisfy it. */
-function cidrToRange(cidr: string): IpRange | undefined {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr.trim());
-  if (!m) return undefined;
-  const octets = [m[1], m[2], m[3], m[4]].map(Number);
-  if (octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return undefined;
-  const bits = Number(m[5]);
-  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return undefined;
-  const addr = octets.reduce((acc, o) => acc * 256 + o, 0);
-  const size = 2 ** (32 - bits);
-  const start = Math.floor(addr / size) * size;
-  return [start, start + size - 1];
-}
-
-function mergeRanges(ranges: IpRange[]): IpRange[] {
-  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
-  const out: IpRange[] = [];
-  for (const [s, e] of sorted) {
-    const last = out[out.length - 1];
-    if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e);
-    else out.push([s, e]);
-  }
-  return out;
-}
-
-/** base minus sub — used so an ipBlock's `except` holes cannot be counted as coverage. */
-function subtractRanges(base: IpRange[], sub: IpRange[]): IpRange[] {
-  let acc = mergeRanges(base);
-  for (const [ss, se] of mergeRanges(sub)) {
-    const next: IpRange[] = [];
-    for (const [s, e] of acc) {
-      if (se < s || ss > e) next.push([s, e]);
-      else {
-        if (s < ss) next.push([s, ss - 1]);
-        if (e > se) next.push([se + 1, e]);
-      }
-    }
-    acc = next;
-  }
-  return acc;
-}
-
-function rangesCover(covered: IpRange[], required: IpRange): boolean {
-  let cursor = required[0];
-  for (const [s, e] of mergeRanges(covered)) {
-    if (s > cursor) return false;
-    if (e >= cursor) cursor = e + 1;
-    if (cursor > required[1]) return true;
-  }
-  return cursor > required[1];
-}
-
-function ipToStr(n: number): string {
-  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
-}
-
-/** The exact union of the three required private ranges. See docs/helm-verify.md §20. */
-const KUBE_API_REQUIRED_RANGES: IpRange[] = mergeRanges(
-  KUBE_API_REQUIRED_CIDRS.map((c) => cidrToRange(c)).filter((r): r is IpRange => r !== undefined)
-);
-
-/** THE AIR-GAP REGRESSION GUARD. See docs/helm-verify.md §21. */
-function autowireHookKubeApiViolations(label: string, docs: K8sDoc[]): string[] {
-  const violations: string[] = [];
-  const policies = docs.filter((d) => d.kind === "NetworkPolicy");
-  /** Does this single egress rule plausibly reach a kube-apiserver endpoint? Returns the reason it
-   *  does NOT, so the violation message can say which half failed. */
-  const kubeApiRuleGap = (rule: NpEgressRule): string | undefined => {
-    const blocks = (rule.to ?? [])
-      .map((t) => t.ipBlock)
-      .filter((b): b is NonNullable<typeof b> => Boolean(b));
-    if (blocks.length === 0) return "no ipBlock 'to' entry";
-    const ports = rule.ports ?? [];
-    // An absent/empty `ports` means "every port" in Kubernetes — genuinely reachable.
-    const portOk =
-      ports.length === 0 ||
-      ports.some(
-        (p) =>
-          (p.protocol ?? "TCP") === "TCP" &&
-          typeof p.port === "number" &&
-          (p.port === KUBE_API_ENDPOINT_PORT ||
-            (typeof p.endPort === "number" &&
-              p.port <= KUBE_API_ENDPOINT_PORT &&
-              KUBE_API_ENDPOINT_PORT <= p.endPort))
-      );
-    if (!portOk) {
-      return `TCP/${KUBE_API_ENDPOINT_PORT} is not among its ports (${ports
-        .map((p) => `${p.protocol ?? "TCP"}/${p.port}${p.endPort ? `-${p.endPort}` : ""}`)
-        .join(",")})`;
-    }
-    const allowed = blocks
-      .map((b) => cidrToRange(String(b.cidr ?? "")))
-      .filter((r): r is IpRange => r !== undefined);
-    const excepted = blocks
-      .flatMap((b) => b.except ?? [])
-      .map((c) => cidrToRange(String(c)))
-      .filter((r): r is IpRange => r !== undefined);
-    const covered = subtractRanges(allowed, excepted);
-    const missing = KUBE_API_REQUIRED_CIDRS.filter((c) => {
-      const req = cidrToRange(c);
-      return req === undefined || !rangesCover(covered, req);
-    });
-    if (missing.length > 0) {
-      return `its ipBlocks (${blocks
-        .map((b) => b.cidr)
-        .join(",")}) do not cover ${missing.join(",")}`;
-    }
-    // Covering the ranges is necessary but not sufficient. See docs/helm-verify.md §22.
-    const excess = subtractRanges(covered, KUBE_API_REQUIRED_RANGES);
-    if (excess.length > 0) {
-      return (
-        `its ipBlocks (${blocks.map((b) => b.cidr).join(",")}) grant egress BEYOND the ` +
-        `required private ranges (${KUBE_API_REQUIRED_CIDRS.join(", ")}) — e.g. ${excess
-          .map(([s, e]) => (s === e ? ipToStr(s) : `${ipToStr(s)}-${ipToStr(e)}`))
-          .join(
-            ", "
-          )} — which includes public-internet address space; the kube-API allow must be ` +
-        `scoped to exactly the required private ranges, never 0.0.0.0/0 or any range that reaches ` +
-        `beyond them`
-      );
-    }
-    return undefined;
-  };
-  // Identify hooks by their COMPONENT LABEL, never by name substring: the rendered Job name embeds
-  // the Helm release name, so a release called e.g. `verify-autowire-argocd` would drag the
-  // unrelated migrations Job into this check.
-  const hookJobs = docs.filter(
-    (d) =>
-      d.kind === "Job" &&
-      /-autowire$/.test(String(d.metadata?.labels?.["app.kubernetes.io/component"] ?? ""))
-  );
-  if (hookJobs.length === 0) {
-    return [`[${label}] expected at least one *-autowire hook Job in this render, found none`];
-  }
-  // WHAT COUNTS AS "DENY-ALL EGRESS". See docs/helm-verify.md §23.
-  const denyPolicies = policies.filter((np) => {
-    const spec = np.spec as { policyTypes?: string[]; egress?: unknown } | undefined;
-    return Boolean(spec?.policyTypes?.includes("Egress")) && hasNoAllowRules(spec?.egress);
-  });
-
-  for (const job of hookJobs) {
-    const jobName = String(job.metadata?.name ?? "<unnamed>");
-    const podLabels = podTemplateLabelsOf(job);
-    const denied = denyPolicies.some((np) =>
-      selectorSelects((np.spec as { podSelector?: LabelSelector }).podSelector, podLabels)
-    );
-    if (!denied) {
-      // networkPolicy.enabled=false ⇒ nothing is enforced anywhere and there is genuinely nothing to
-      // check. But if the render DOES contain NetworkPolicies and yet no deny-all selects this hook,
-      // the guard would pass VACUOUSLY — the exact silent-pass shape this check exists to prevent —
-      // so say so instead of skipping.
-      if (policies.length === 0) continue;
-      violations.push(
-        `[${label}] hook Job '${jobName}' pod (${JSON.stringify(podLabels)}) is NOT selected by any ` +
-          `deny-all-egress NetworkPolicy in a render that HAS ${policies.length} NetworkPolicy(s). ` +
-          `This chart always renders '-default-deny' over its own selector labels when ` +
-          `networkPolicy.enabled, so either that policy was weakened or the hook's labels drifted — ` +
-          `and either way the kube-API reachability assertion below would be skipped and this guard ` +
-          `would pass without checking anything.`
-      );
-      continue;
-    }
-
-    const gaps: string[] = [];
-    const granting = policies.filter((np) => {
-      const spec = np.spec as { podSelector?: LabelSelector; egress?: NpEgressRule[] } | undefined;
-      if (!selectorSelects(spec?.podSelector, podLabels)) return false;
-      let ok = false;
-      for (const rule of spec?.egress ?? []) {
-        const gap = kubeApiRuleGap(rule);
-        if (gap === undefined) ok = true;
-        else if (gap !== "no ipBlock 'to' entry")
-          gaps.push(`NetworkPolicy/${np.metadata?.name}: ${gap}`);
-      }
-      return ok;
-    });
-    if (granting.length === 0) {
-      violations.push(
-        `[${label}] hook Job '${jobName}' is selected by a deny-all-egress NetworkPolicy but NO ` +
-          `NetworkPolicy grants its pod (${JSON.stringify(podLabels)}) a plausible path to the ` +
-          `Kubernetes API server. Required, because the CNI evaluates the POST-DNAT destination ` +
-          `(<node-ip>:${KUBE_API_ENDPOINT_PORT}, measured 172.18.0.2:6443 on the drill's kind cluster — ` +
-          `NOT the 10.96.0.1:443 ClusterIP): an egress rule with ipBlock 'to' entries whose CIDRs cover ` +
-          `${KUBE_API_REQUIRED_CIDRS.join(", ")} AND whose ports include TCP/${KUBE_API_ENDPOINT_PORT}. ` +
-          `443 alone is NOT enough (it is the pre-DNAT port; the packet the CNI sees is on ` +
-          `${KUBE_API_ENDPOINT_PORT}), and a single private range is not enough (kind's node IPs are ` +
-          `172.18.0.0/16, k3s' are elsewhere). Its first action is a cross-namespace Secret read ` +
-          `against https://kubernetes.default.svc — under an enforced default-deny (the air-gap drill) ` +
-          `that read is DROPPED and 'helm upgrade --wait' dies on the hook. Fix ` +
-          `networkPolicy.kubeApi (deploy/helm/templates/networkpolicy.yaml, -allow-kube-api-autowire)` +
-          (gaps.length > 0 ? `. Closest candidate rule(s) — ${gaps.join("; ")}` : "") +
-          `.`
-      );
-      continue;
-    }
-    // Blast radius: the granting policy must NOT also cover the ordinary workloads. api/worker keep
-    // the unmodified default-deny posture — the kube-API allow is for the short-lived hook pods only.
-    for (const np of granting) {
-      const sel = (np.spec as { podSelector?: LabelSelector }).podSelector;
-      for (const kind of ["api", "worker"]) {
-        const deploy = docs.find(
-          (d) =>
-            d.kind === "Deployment" && d.metadata?.labels?.["app.kubernetes.io/component"] === kind
-        );
-        if (deploy && selectorSelects(sel, podTemplateLabelsOf(deploy))) {
-          violations.push(
-            `[${label}] NetworkPolicy/${np.metadata?.name} grants kube-API egress but ALSO selects the ` +
-              `'${kind}' Deployment's pods — the API-server allow must be scoped to the auto-wire hook ` +
-              `pods only, never the long-running workloads`
-          );
-        }
-      }
-    }
-  }
-  return violations;
 }
 
 function assertHardenedContainer(scope: string, container: Container): void {
@@ -2363,64 +2123,42 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     "scp-argo-events",
     "scp-gitea"
   ];
-  // The ONLY main-chart resources allowed in a bundled namespace are the auto-wire hooks' tiny
-  // cross-namespace RBAC (a Role + RoleBinding in scp-argocd / scp-gitea, to read the backend's
-  // admin secret) — identified by the *-autowire component labels — and the stack controller's
+  // The ONLY main-chart resource allowed in a bundled namespace is the stack controller's
   // per-namespace RoleBinding (M29.4: its namespaced rights exist only there; ./stackd.ts pins it).
-  // Anything else means a VENDORED backend (Deployment/CRD/ConfigMap/…) crept back into the
-  // release-stored main chart.
-  const autowireComponents = new Set(["argocd-autowire", "gitea-autowire"]);
+  // Anything else means a VENDORED backend (Deployment/CRD/ConfigMap/…) — or, since M29.2, a
+  // revived install-time auto-wire hook — crept back into the release-stored main chart.
   const strayBundled = docs.filter(
     (d) =>
       bundledNamespaces.includes(d.metadata?.namespace ?? "") &&
-      !autowireComponents.has(d.metadata?.labels?.["app.kubernetes.io/component"] ?? "") &&
       !(
         d.kind === "RoleBinding" && d.metadata?.labels?.["app.kubernetes.io/component"] === "stackd"
       )
   );
   assert(
     strayBundled.length === 0,
-    `[${label}] the main chart rendered ${strayBundled.length} non-autowire resource(s) into a bundled-backend namespace (${strayBundled
+    `[${label}] the main chart rendered ${strayBundled.length} resource(s) into a bundled-backend namespace (${strayBundled
       .map((d) => `${d.kind}/${d.metadata?.name}`)
       .join(
         ", "
       )}) — bundled backends must live ONLY in deploy/helm-bundled, never the release-stored main chart`
   );
-  if (label === "kitchen-sink") {
-    // What the main chart DOES keep for bundled backends: enabling argocd / gitea turns on the SCP-
-    // side integration — the post-install auto-wire hook Job (mints the scoped backend token) and
-    // the allow-<backend> NetworkPolicy egress. Assert both render for each.
-    for (const be of ["argocd", "gitea"]) {
-      const autowireJob = docs.find(
-        (d) => d.kind === "Job" && String(d.metadata?.name).includes(`${be}-autowire`)
-      );
-      assert(
-        autowireJob,
-        `[${label}] bundledExecutor.${be}.enabled but no ${be}-autowire hook Job in the main chart`
-      );
-      const hookAnn = autowireJob?.metadata?.annotations?.["helm.sh/hook"] ?? "";
-      assert(
-        hookAnn.includes("post-install"),
-        `[${label}] ${be}-autowire Job must be a post-install hook (got "${hookAnn}")`
-      );
-      assert(
-        docs.some(
-          (d) => d.kind === "NetworkPolicy" && String(d.metadata?.name).includes(`allow-${be}`)
-        ),
-        `[${label}] bundledExecutor.${be}.enabled but no allow-${be} NetworkPolicy egress in the main chart`
-      );
-    }
-    // Asserted separately from the loop, since it differs. See docs/helm-verify.md §27.
-    assert(
-      docs.some(
-        (d) =>
-          d.kind === "NetworkPolicy" && String(d.metadata?.name).includes("allow-argo-workflows")
-      ),
-      `[${label}] bundledExecutor.argoWorkflows.enabled but no allow-argo-workflows NetworkPolicy egress in the main chart`
+  // M29.2 (ADR-0061): THE MAIN CHART WIRES NO BUNDLED BACKEND. Their egress, token, trust and
+  // registration are the stack controller's, from its own render — a hook Job or an
+  // `allow-<backend>` policy here would be a second, hand-kept declaration of the same fact, which
+  // is exactly the three-places drift M29.2 removed. In EVERY render, not only the kitchen sink.
+  {
+    const legacy = docs.filter(
+      (d) =>
+        (d.kind === "Job" && /-(argocd|gitea)-autowire/.test(String(d.metadata?.name))) ||
+        (d.kind === "NetworkPolicy" &&
+          /-allow-(argocd|gitea|argo-workflows|kube-api-autowire)$/.test(String(d.metadata?.name)))
     );
-    // ...and the third thing the main chart must keep for them: a path from the hook pods to the
-    // Kubernetes API server under the chart's own default-deny. See autowireHookKubeApiViolations.
-    for (const v of autowireHookKubeApiViolations(label, docs)) fail(v);
+    assert(
+      legacy.length === 0,
+      `[${label}] the main chart rendered bundled-backend wiring of its own (${legacy
+        .map((d) => `${d.kind}/${d.metadata?.name}`)
+        .join(", ")}) — the stack controller wires bundled backends (ADR-0061)`
+    );
   }
 
   // NetworkPolicy — default-deny AND at least one explicit allow, both present.
@@ -2850,22 +2588,6 @@ async function main(): Promise<void> {
       "oidc.clientId=scp",
       "--set",
       "oidc.redirectUri=https://scp.example.com/callback",
-      // Main-chart bundled integration: only the SLIM enabled flags exist here now (they turn on the
-      // auto-wire hook + allow-argocd NetworkPolicy). The vendored render lives in the
-      // separate bundled chart, verified below.
-      "--set",
-      "bundledExecutor.argocd.enabled=true",
-      "--set",
-      "bundledExecutor.gitea.enabled=true",
-      // Argo Workflows joins the kitchen sink now that the MAIN chart carries a slim block for it.
-      // "Every optional feature toggled on" has to include it, or the allow-argo-workflows assertion
-      // renders against a chart where the backend is OFF and passes vacuously.
-      "--set",
-      "bundledExecutor.argoWorkflows.enabled=true",
-      "--set",
-      // Required once the argo-server ingress policy is namespace-scoped; the chart fails closed
-      // without it rather than falling back to "SCP's pod label in ANY namespace".
-      "bundledExecutor.scpNamespace=verify-scp-ns",
       // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
       // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
       "--set-json",
@@ -2912,260 +2634,84 @@ async function main(): Promise<void> {
     }
   }
 
-  // AIR-GAP REGRESSION GUARD. See docs/helm-verify.md §32.
+  // M29.2 (ADR-0061): THE EGRESS POLICY THE STACK CONTROLLER WRITES, against the REAL render.
+  // The controller derives each wired backend's scpd egress NetworkPolicy from that backend's own
+  // rendered Service (`backendEndpoint` + `egressPolicy`, apps/stackd/src/wiring.ts). Held here to
+  // the property the old allow-<backend> rules had to be hand-kept to: the policy opens the
+  // CONTAINER port (the post-DNAT destination — argocd-server's 8080, not the Service's 80, which is
+  // what cost the air-gap drill every run) and selects the pods that actually serve it.
   console.log(
-    "helm-verify: checking the bundled auto-wire hooks' kube-API egress under default-deny..."
+    "helm-verify: checking the stack controller's per-backend egress policy against the real renders..."
   );
-  for (const be of ["argocd", "gitea"]) {
-    const docs = renderChart(`verify-autowire-${be}`, [
-      "--set",
-      `bundledExecutor.${be}.enabled=true`
-    ]);
-    const violations = autowireHookKubeApiViolations(`autowire-${be}-only`, docs);
-    for (const v of violations) fail(v);
-
-    // THE SAME POST-DNAT RULE, APPLIED TO THE BACKEND ITSELF. See docs/helm-verify.md §33.
-    const backendDocs = renderBundledChart([`--set`, `bundledExecutor.${be}.enabled=true`]);
-
-    // EVERY RENDERED DOC MUST CARRY AN apiVersion. See docs/helm-verify.md §34.
-    for (const doc of backendDocs) {
-      assert(
-        typeof doc.apiVersion === "string" && doc.apiVersion.length > 0,
-        `[bundled ${be} render] a document has NO apiVersion (kind=${String(doc.kind)}, ` +
-          `name=${String(doc.metadata?.name)}). kubectl apply rejects the entire stream on this, so ` +
-          `the whole backend fails to install. The usual cause is Go-template whitespace chomping ` +
-          `gluing a document's first line onto a preceding comment — check '{{- end -}}' vs ` +
-          `'{{- end }}' where the emitting helper starts its output.`
-      );
-    }
-    // Suffix match: the bundled chart prefixes its release name (`scp-gitea-http`), while the
-    // vendored Argo CD manifests keep upstream's bare `argocd-server`.
-    const backendSvcSuffix = be === "argocd" ? "argocd-server" : "gitea-http";
-    const backendSvc = backendDocs.find(
-      (d) => d.kind === "Service" && (d.metadata?.name ?? "").endsWith(backendSvcSuffix)
-    );
-    // NOT a silent skip. If the Service cannot be found the check has not run, and a check that
-    // does not run must say so rather than pass — the whole guard would otherwise evaporate the
-    // moment upstream renames a Service, which is exactly when it is most needed.
-    assert(
-      backendSvc !== undefined,
-      `[allow-${be} post-DNAT port] could not find the '${backendSvcSuffix}' Service in the ` +
-        `bundled render, so the post-DNAT port could not be checked at all. Fix the lookup — do ` +
-        `not let this check quietly stop running.`
-    );
-    if (backendSvc) {
-      const svcPorts = ((backendSvc.spec as Record<string, unknown> | undefined)?.ports ?? []) as {
-        port?: number;
-        targetPort?: number | string;
-      }[];
-      // An ABSENT targetPort means "same as port" (Kubernetes' default), so it is resolved here
-      // rather than dropped — dropping it is what made this silently skip Gitea, whose Service
-      // omits targetPort entirely.
-      const targetPorts = svcPorts
-        .map((sp) => (typeof sp.targetPort === "number" ? sp.targetPort : sp.port))
-        .filter((n): n is number => typeof n === "number");
-      const policy = docs.find(
-        (d) => d.kind === "NetworkPolicy" && (d.metadata?.name ?? "").endsWith(`-allow-${be}`)
-      );
-      const allowed = (
-        ((policy?.spec as Record<string, unknown> | undefined)?.egress ?? []) as {
-          ports?: { port?: number }[];
-        }[]
-      )
-        .flatMap((r) => r.ports ?? [])
-        .map((pp) => pp.port)
-        .filter((n): n is number => typeof n === "number");
-      if (policy && targetPorts.length > 0) {
-        const missing = targetPorts.filter((tp) => !allowed.includes(tp));
+  {
+    const stackRelease = await loadRelease({ chartDir: BUNDLED_CHART_DIR, version: "verify" });
+    for (const [be, key] of [
+      ["argocd", "argocd"],
+      ["gitea", "gitea"],
+      ["argo-workflows", "argoWorkflows"]
+    ] as const) {
+      const backendDocs = renderBundledChart([
+        `--set`,
+        `bundledExecutor.${key}.enabled=true`,
+        `--set`,
+        `bundledExecutor.scpNamespace=verify-scp-ns`
+      ]);
+      // EVERY RENDERED DOC MUST CARRY AN apiVersion. See docs/helm-verify.md §34.
+      for (const doc of backendDocs) {
         assert(
-          missing.length === 0,
-          `[allow-${be} post-DNAT port] the egress policy must allow the Service's targetPort(s) ` +
-            `${JSON.stringify(targetPorts)} — the destination a NetworkPolicy actually sees after ` +
-            `kube-proxy DNAT — but allows only ${JSON.stringify(allowed)}; missing ` +
-            `${JSON.stringify(missing)}. Allowing only the Service port is silently fine wherever ` +
-            `NetworkPolicy is unenforced (kind's default CNI) and drops every connection where it ` +
-            `IS enforced (Calico, the air-gap drill), surfacing as a connection error with no port ` +
-            `in it.`
+          typeof doc.apiVersion === "string" && doc.apiVersion.length > 0,
+          `[bundled ${be} render] a document has NO apiVersion (kind=${String(doc.kind)}, ` +
+            `name=${String(doc.metadata?.name)}). kubectl apply rejects the entire stream on this, so ` +
+            `the whole backend fails to install. The usual cause is Go-template whitespace chomping ` +
+            `gluing a document's first line onto a preceding comment — check '{{- end -}}' vs ` +
+            `'{{- end }}' where the emitting helper starts its output.`
         );
-        if (missing.length === 0) {
-          console.log(
-            `  ${be}: allow-${be} egress permits targetPort(s) ${JSON.stringify(targetPorts)} ` +
-              `(post-DNAT destination) — OK`
-          );
-        }
       }
-    }
-    if (violations.length === 0) {
-      console.log(
-        `  ${be}-only render: hook pods have an ipBlock egress path covering ` +
-          `${KUBE_API_REQUIRED_CIDRS.join("/")} on TCP/${KUBE_API_ENDPOINT_PORT} (the POST-DNAT ` +
-          `apiserver destination, not the 443 ClusterIP port) — OK`
+      let ep;
+      try {
+        ep = backendEndpoint(stackRelease, be, backendDocs as unknown as KubeObject[]);
+      } catch (err) {
+        fail(`[${be} egress] ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!ep) {
+        fail(`[${be} egress] the controller derives no endpoint for ${be}`);
+        continue;
+      }
+      const policy = egressPolicy(
+        "verify-scp-ns",
+        { "app.kubernetes.io/name": "commanderscp" },
+        be,
+        ep
       );
-    }
-  }
-
-  // The upgrade-from-a-shipped-release guard on that value. See docs/helm-verify.md §35.
-  {
-    const label =
-      "reuse-values-upgrade (networkPolicy.kubeApi absent, as on any pre-existing release)";
-    const upgraded = renderChart("verify-reuse-values", [
-      "--set",
-      "bundledExecutor.argocd.enabled=true",
-      "--set",
-      "bundledExecutor.gitea.enabled=true",
-      "--set",
-      "networkPolicy.kubeApi=null"
-    ]);
-    assert(
-      upgraded.some(
+      const rule = (
+        policy["spec"] as {
+          egress: { to: { podSelector: LabelSelector }[]; ports: { port: number }[] }[];
+        }
+      ).egress[0]!;
+      const servers = backendDocs.filter(
         (d) =>
-          d.kind === "NetworkPolicy" && String(d.metadata?.name).includes("allow-kube-api-autowire")
-      ),
-      `[${label}] rendered without error but produced NO -allow-kube-api-autowire NetworkPolicy — an ` +
-        `absent kubeApi key must default to ENABLED with the chart's documented CIDRs/ports, otherwise ` +
-        `every 'helm upgrade --reuse-values' from an existing release silently drops the fix and the ` +
-        `auto-wire hook hangs exactly as it did before`
-    );
-    for (const v of autowireHookKubeApiViolations(label, upgraded)) fail(v);
-    console.log(
-      "  reuse-values upgrade render (kubeApi key absent): policy still rendered and reachable — OK"
-    );
-  }
-
-  // NEGATIVE case — PROVE the guard above actually fires. See docs/helm-verify.md §36.
-  {
-    const guardLabel = "autowire-kube-api-guard";
-    const preFix = renderChart("verify-autowire-prefix", [
-      "--set",
-      "bundledExecutor.argocd.enabled=true",
-      "--set",
-      "bundledExecutor.gitea.enabled=true",
-      "--set",
-      "networkPolicy.kubeApi.enabled=false"
-    ]);
-    const preFixViolations = autowireHookKubeApiViolations(guardLabel, preFix);
-    assert(
-      preFixViolations.length >= 2,
-      `[${guardLabel}] with networkPolicy.kubeApi disabled BOTH auto-wire hooks must be flagged as having no kube-API egress path (that is the shipped-broken state); got ${preFixViolations.length} violation(s)`
-    );
-    for (const be of ["argocd", "gitea"]) {
+          (d.kind === "Deployment" || d.kind === "StatefulSet") &&
+          selectorSelects(rule.to[0]!.podSelector, podTemplateLabelsOf(d))
+      );
       assert(
-        preFixViolations.some((v) => v.includes(`${be}-autowire`)),
-        `[${guardLabel}] the negative case must name the ${be}-autowire hook Job; got: ${preFixViolations.join("; ")}`
+        servers.length >= 1,
+        `[${be} egress] the controller's egress policy selects no Deployment in the ${be} render — it would open a door to nothing`
+      );
+      const containerPorts = servers.flatMap((d) =>
+        (podSpecOf(d)?.containers ?? []).flatMap((c) =>
+          ((c as { ports?: { containerPort?: number }[] }).ports ?? []).map((p) => p.containerPort)
+        )
+      );
+      const opened = rule.ports.map((p) => p.port);
+      assert(
+        opened.length === 1 && containerPorts.includes(opened[0]!),
+        `[${be} egress] the controller's egress policy opens ${JSON.stringify(opened)}, but the pods it selects listen on ${JSON.stringify(containerPorts)} — a NetworkPolicy is matched AFTER the Service's DNAT, so it must open the container port`
+      );
+      console.log(
+        `  ${be}: egress policy -> ${ep.serverUrl} opens container port ${opened[0]} on ${servers.map((d) => d.metadata?.name).join(", ")} — OK`
       );
     }
-    console.log(`  negative case (networkPolicy.kubeApi disabled) correctly flagged both hooks`);
-  }
-
-  // NEGATIVE cases 2+3 — the two MUTATIONS that used to slip past this guard while leaving the hook
-  // just as dead on a real cluster. Both render a perfectly valid, ipBlock-backed, 443-bearing
-  // -allow-kube-api-autowire policy; both are unreachable post-DNAT. If someone loosens
-  // kubeApiRuleGap back to "any ipBlock rule mentioning 443 or 6443", THESE go red.
-  for (const [what, setArgs, why] of [
-    [
-      "ports narrowed to [443]",
-      ["--set-json", "networkPolicy.kubeApi.ports=[443]"],
-      "443 is the pre-DNAT ClusterIP port; the packet the CNI actually evaluates is <node-ip>:6443 (measured 172.18.0.2:6443 on kind)"
-    ],
-    [
-      "cidrs narrowed to [10.0.0.0/8]",
-      ["--set-json", 'networkPolicy.kubeApi.cidrs=["10.0.0.0/8"]'],
-      "kind's node IPs are 172.18.0.0/16 — outside 10/8 — so the drill's own cluster is not covered"
-    ]
-  ] as [string, string[], string][]) {
-    const guardLabel = `autowire-kube-api-guard (${what})`;
-    const mutated = renderChart("verify-autowire-mutation", [
-      "--set",
-      "bundledExecutor.argocd.enabled=true",
-      "--set",
-      "bundledExecutor.gitea.enabled=true",
-      ...setArgs
-    ]);
-    const mutatedViolations = autowireHookKubeApiViolations(guardLabel, mutated);
-    assert(
-      mutatedViolations.length >= 2,
-      `[${guardLabel}] this render must be flagged for BOTH hooks — ${why}. The guard must encode real ` +
-        `reachability, not "an ipBlock rule exists on some kube-ish port"; got ${mutatedViolations.length} violation(s)`
-    );
-    console.log(`  negative case (${what}) correctly flagged both hooks`);
-  }
-
-  // NEGATIVE case — WIDENING. See docs/helm-verify.md §37.
-  {
-    const guardLabel = "autowire-kube-api-guard (cidrs widened to [0.0.0.0/0])";
-    const widened = renderChart("verify-autowire-widen", [
-      "--set",
-      "bundledExecutor.argocd.enabled=true",
-      "--set",
-      "bundledExecutor.gitea.enabled=true",
-      "--set-json",
-      'networkPolicy.kubeApi.cidrs=["0.0.0.0/0"]'
-    ]);
-    const widenedViolations = autowireHookKubeApiViolations(guardLabel, widened);
-    assert(
-      widenedViolations.length >= 2,
-      `[${guardLabel}] this render must be flagged for BOTH hooks — 0.0.0.0/0 covers the required ` +
-        `private ranges but ALSO grants the hook pods egress to the entire public internet, which a ` +
-        `chart whose whole posture is default-deny must never accept. The guard must encode BOTH a ` +
-        `lower bound (covers the required ranges) and an upper bound (extends no further than them), ` +
-        `not coverage alone; got ${widenedViolations.length} violation(s)`
-    );
-    assert(
-      widenedViolations.every((v) => v.includes("BEYOND the required private ranges")),
-      `[${guardLabel}] the violations for this render must name the specific defect — grant extends ` +
-        `beyond the required private ranges — not some unrelated gap; got: ${JSON.stringify(widenedViolations)}`
-    );
-    console.log("  negative case (cidrs widened to 0.0.0.0/0) correctly flagged both hooks");
-  }
-
-  // Default-deny written as an empty list, not by omitting. See docs/helm-verify.md §38.
-  {
-    const guardLabel = "autowire-kube-api-guard (default-deny as `egress: []`)";
-    const hookLabels = {
-      "app.kubernetes.io/name": "commanderscp",
-      "commanderscp.io/autowire-hook": "true"
-    };
-    const synthetic: K8sDoc[] = [
-      {
-        kind: "NetworkPolicy",
-        metadata: { name: "synthetic-default-deny" },
-        // The evasion: an ALLOW-RULE-FREE egress list spelled as [] rather than omitted.
-        spec: {
-          podSelector: { matchLabels: { "app.kubernetes.io/name": "commanderscp" } },
-          policyTypes: ["Egress"],
-          egress: []
-        }
-      },
-      {
-        kind: "Job",
-        metadata: {
-          name: "synthetic-argocd-autowire",
-          labels: { "app.kubernetes.io/component": "argocd-autowire" }
-        },
-        spec: { template: { metadata: { labels: hookLabels } } }
-      }
-    ];
-    const syntheticViolations = autowireHookKubeApiViolations(guardLabel, synthetic);
-    // NOT a bare count. See docs/helm-verify.md §39.
-    const correctlyDenied = syntheticViolations.some(
-      (v) =>
-        v.includes("synthetic-argocd-autowire") &&
-        v.includes("is selected by a deny-all-egress NetworkPolicy but NO") &&
-        v.includes("plausible path to the Kubernetes API server")
-    );
-    const wronglyUnselected = syntheticViolations.some((v) => v.includes("is NOT selected by any"));
-    assert(
-      correctlyDenied && !wronglyUnselected,
-      `[${guardLabel}] a deny-all-egress policy written as 'egress: []' must still be recognised as ` +
-        `default-deny, and the hook must then be reported as DENIED-with-no-kube-API-path — not as ` +
-        `"not selected by any deny-all-egress policy" (the wrong diagnosis a detector matching only ` +
-        `'egress === undefined' produces, since it never counts the [] policy as denying anything, ` +
-        `and which is just as green a violation count while checking nothing this case exists to ` +
-        `check); got: ${JSON.stringify(syntheticViolations)}`
-    );
-    console.log(
-      `  negative case (default-deny as \`egress: []\`) correctly recognised as deny-all`
-    );
   }
 
   // The chart's role value must reach the api and worker pods. See docs/helm-verify.md §40.
