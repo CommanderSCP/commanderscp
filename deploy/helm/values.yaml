@@ -757,7 +757,7 @@ scanDbCache:
 # asserts no Valkey/Argo CD is emitted with the profile off).
 # -------------------------------------------------------------------------------------------
 # Bundled executor backends (Mode B, ADR-0002) have NO values in this chart any more (M29.2,
-# ADR-0060). The stack controller (`stackd` above) installs them from `deploy/helm-bundled`, which it
+# ADR-0061). The stack controller (`stackd` above) installs them from `deploy/helm-bundled`, which it
 # carries in its image, and WIRES each one into SCP in the same reconcile: the scoped account's token,
 # the TLS trust, both egress layers and the execution-system registration, with no hook Job, no
 # `helm upgrade` flag and no command to copy. The `bundledExecutor.{argocd,gitea,argoWorkflows}`

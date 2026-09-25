@@ -55,7 +55,7 @@ cleanup() {
     kubectl get pods -A 2>&1 | tail -40 >&2 || true
     # The stack controller (M29.4/M29.2) installs and wires the bundled backends; when one does not
     # come up, its own log names the step (render, apply, readiness, wiring). The install-time
-    # auto-wire hook Jobs this used to dump are gone (ADR-0060).
+    # auto-wire hook Jobs this used to dump are gone (ADR-0061).
     echo "--- stack controller (scp-stackd) ---" >&2
     kubectl get pods -A -l "app.kubernetes.io/component=stackd" >&2 2>&1 || true
     while read -r ns name; do

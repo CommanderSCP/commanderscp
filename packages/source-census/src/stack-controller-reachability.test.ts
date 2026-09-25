@@ -62,7 +62,7 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
   refViolation: "is what a prune checks before it deletes anything",
   stateDigests: "is what the controller reports to scpd about the state it left",
   inventoryDigest: "is how the controller checks its stored inventory against scpd's record",
-  // M29.2 (ADR-0060): the auto-wire. Controller half, then scpd half.
+  // M29.2 (ADR-0061): the auto-wire. Controller half, then scpd half.
   wireBackend:
     "is the wiring step itself — token, CA, both egress layers, the hand-off; with no caller every backend installs and stays unwired",
   unwireBackend: "takes the wiring back before a disabled backend is removed",

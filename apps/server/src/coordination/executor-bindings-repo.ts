@@ -1020,7 +1020,7 @@ export async function resolveExecutorPluginInstance(
           `this domain. Register this domain's own system (scp connect) and bind to that.`
       );
     }
-    // M29.2 (ADR-0060): a STANDARD STACK REGISTRATION is routed by the stack controller's wiring
+    // M29.2 (ADR-0061): a STANDARD STACK REGISTRATION is routed by the stack controller's wiring
     // and by nothing on the object — its endpoint, token, CA and egress allowance all come from
     // `stackWiredRouting`. `null` means an ordinary system, routed below exactly as before.
     const stack = await stackWiredRouting(tx, input.orgId, sys.id, input.masterKey);

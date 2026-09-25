@@ -47,7 +47,7 @@ import { formatRelative } from "./admin-dependencies";
  * the amber-dashed unknown tone, never a guessed phase; a controller that has stopped reporting is
  * said so above the table, and its last report is labelled as such.
  *
- * M29.2 (ADR-0060): each backend's WIRING into SCP — where scpd reaches it, whether its scoped
+ * M29.2 (ADR-0061): each backend's WIRING into SCP — where scpd reaches it, whether its scoped
  * token and TLS trust are handed over — with a Rotate action, and the organizations the stack
  * serves (its wired backends are registered in each). Serving another org is an instance
  * decision: every served org drives the same scoped backend accounts.

@@ -164,7 +164,7 @@ async function main(): Promise<void> {
   await cp(HELM_CHART_DIR, path.join(bundleRoot, "helm"), { recursive: true });
   // The bundled-backends chart + its render-only wrapper ride the bundle too, for diagnostics
   // (`scp-bundled.sh render <backend>`). INSTALLING a backend is the stack controller's, whose image
-  // carries the same chart and which also wires it into SCP (M29.2, ADR-0060) — install.sh turns the
+  // carries the same chart and which also wires it into SCP (M29.2, ADR-0061) — install.sh turns the
   // controller on; nothing applies the chart by hand any more.
   await cp(BUNDLED_HELM_CHART_DIR, path.join(bundleRoot, "helm-bundled"), { recursive: true });
   await copyFile(BUNDLED_WRAPPER, path.join(bundleRoot, "scp-bundled.sh"));

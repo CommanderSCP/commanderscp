@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * M29.2 (ADR-0060) — WHO MAY WRITE A STANDARD STACK REGISTRATION.
+ * M29.2 (ADR-0061) — WHO MAY WRITE A STANDARD STACK REGISTRATION.
  *
  * `stackManagedWrite` is the one flag that lets a write through `assertStackRegistrationWrite` to an
  * `execution-system` that is a bundled backend's registration. It must be set by the stack's own

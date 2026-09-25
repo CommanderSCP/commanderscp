@@ -40,7 +40,7 @@ name: Deploy Drills (M8 kind / air-gap / Ansible)
 # Kept nightly + on-demand, still NEVER merge-gating (each run is minutes-long).
 #
 # The bundled Argo CD auto-wire drill that used to run last is gone with the auto-wire hooks it
-# drilled (M29.2, ADR-0060): the stack controller now wires every bundled backend, and job 4e of
+# drilled (M29.2, ADR-0061): the stack controller now wires every bundled backend, and job 4e of
 # ci.yml proves it — on every PR, against a real Argo CD, Argo Workflows and Gitea in kind.
 
 on:

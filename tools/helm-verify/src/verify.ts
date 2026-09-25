@@ -2142,7 +2142,7 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
         ", "
       )}) — bundled backends must live ONLY in deploy/helm-bundled, never the release-stored main chart`
   );
-  // M29.2 (ADR-0060): THE MAIN CHART WIRES NO BUNDLED BACKEND. Their egress, token, trust and
+  // M29.2 (ADR-0061): THE MAIN CHART WIRES NO BUNDLED BACKEND. Their egress, token, trust and
   // registration are the stack controller's, from its own render — a hook Job or an
   // `allow-<backend>` policy here would be a second, hand-kept declaration of the same fact, which
   // is exactly the three-places drift M29.2 removed. In EVERY render, not only the kitchen sink.
@@ -2157,7 +2157,7 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
       legacy.length === 0,
       `[${label}] the main chart rendered bundled-backend wiring of its own (${legacy
         .map((d) => `${d.kind}/${d.metadata?.name}`)
-        .join(", ")}) — the stack controller wires bundled backends (ADR-0060)`
+        .join(", ")}) — the stack controller wires bundled backends (ADR-0061)`
     );
   }
 
@@ -2634,7 +2634,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // M29.2 (ADR-0060): THE EGRESS POLICY THE STACK CONTROLLER WRITES, against the REAL render.
+  // M29.2 (ADR-0061): THE EGRESS POLICY THE STACK CONTROLLER WRITES, against the REAL render.
   // The controller derives each wired backend's scpd egress NetworkPolicy from that backend's own
   // rendered Service (`backendEndpoint` + `egressPolicy`, apps/stackd/src/wiring.ts). Held here to
   // the property the old allow-<backend> rules had to be hand-kept to: the policy opens the

@@ -87,7 +87,7 @@ spec:
 ---
 {{- end }}
 {{/*
-THE BUNDLED BACKENDS' EGRESS IS NOT DECLARED HERE ANY MORE (M29.2, ADR-0060). It used to be three
+THE BUNDLED BACKENDS' EGRESS IS NOT DECLARED HERE ANY MORE (M29.2, ADR-0061). It used to be three
 `allow-<backend>` policies gated on main-chart `bundledExecutor.*.enabled` flags — a second place to
 say what the stack controller already knows, and a third alongside SCP_INTERNAL_EGRESS_HOSTS. The
 controller now writes ONE policy per wired backend into this namespace, `scp-stack-egress-<backend>`,

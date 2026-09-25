@@ -63,7 +63,7 @@ Every container this chart renders (api, worker, migrations Job) gets, by defaul
   (empty by default — no behavior change until you list one). A BUNDLED backend needs neither: the
   stack controller writes one `scp-stack-egress-<backend>` policy per backend it wires, from that
   backend's rendered Service (its pods and container port), and removes it when the backend is
-  disabled (M29.2, ADR-0060). With `managedRunners.launcher: kubernetes` the chart renders
+  disabled (M29.2, ADR-0061). With `managedRunners.launcher: kubernetes` the chart renders
   `-allow-kube-api-runner` (the Kubernetes API server, RFC1918 ranges on 443/6443 by default — never
   "any destination"); a control-plane endpoint on a public IP or a non-standard port is
   `networkPolicy.kubeApi.cidrs` / `.ports`. An upgrade from a release that predates that key renders

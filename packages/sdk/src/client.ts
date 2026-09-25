@@ -327,7 +327,7 @@ import {
   getStackSpec as getStackSpecRequest,
   putStackStatus as putStackStatusRequest,
   purgeStackBackend as purgeStackBackendRequest,
-  // M29.2 — wiring, rotation and the organizations the stack serves (ADR-0060).
+  // M29.2 — wiring, rotation and the organizations the stack serves (ADR-0061).
   putStackWiring as putStackWiringRequest,
   deleteStackWiring as deleteStackWiringRequest,
   rotateStackBackend as rotateStackBackendRequest,

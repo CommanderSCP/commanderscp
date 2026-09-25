@@ -69,7 +69,7 @@ import {
  * controller's own last report (a mismatch is refused, and said so), and object by object against
  * `STACK_KINDS` and the backend's namespace, then re-stamped, before a fall back applies it.
  *
- * M29.2 (ADR-0060): once a backend's set is healthy, `ControllerDeps.afterReady` wires it into SCP
+ * M29.2 (ADR-0061): once a backend's set is healthy, `ControllerDeps.afterReady` wires it into SCP
  * (`wiring.ts` — token, CA, both egress layers, registration), and before a disabled backend is
  * removed `ControllerDeps.unwire` takes that back.
  */

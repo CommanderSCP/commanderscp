@@ -15,7 +15,7 @@ import type { ControllerDeps } from "./reconcile.js";
 import { mintSelfSignedCertificate } from "./tls.js";
 
 /**
- * WIRING A HEALTHY BACKEND INTO SCP (M29.2, ADR-0060) — the half of the reconcile that runs once a
+ * WIRING A HEALTHY BACKEND INTO SCP (M29.2, ADR-0061) — the half of the reconcile that runs once a
  * backend's set is ready. For each backend SCP calls (Argo CD, Argo Workflows, Gitea) it, in order:
  *
  *   1. derives the endpoint from ITS OWN RENDER — the Service the chart rendered, its port and its
@@ -39,7 +39,7 @@ import { mintSelfSignedCertificate } from "./tls.js";
  * satisfied (`StackSpecDocument.wiring`); when both match what the controller derives now, nothing
  * is minted. A new backend install (a different Secret or volume identity), a changed endpoint or
  * CA, or an operator's rotation request re-wires. Argo Events is registered with no endpoint: SCP
- * never calls it (its sensors would call SCP — the inbound half is not built, ADR-0060 §open).
+ * never calls it (its sensors would call SCP — the inbound half is not built, ADR-0061 §open).
  */
 
 export type WireableBackend = StackWireableBackend;

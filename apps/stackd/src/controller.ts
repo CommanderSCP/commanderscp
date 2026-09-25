@@ -134,7 +134,7 @@ export async function buildControllerDeps(
     pollMs: 3_000,
     resyncMs: config.resyncMs,
     log: (line) => console.log(`[scp-stackd] ${line}`),
-    // M29.2 (ADR-0060): the auto-wire. Every ready backend is wired into SCP in the same reconcile;
+    // M29.2 (ADR-0061): the auto-wire. Every ready backend is wired into SCP in the same reconcile;
     // every disabled one is unwired before it is removed.
     wiring: { http: nodeBackendHttp(), scpPodLabels: config.scpPodLabels },
     afterReady: (backend, objects, ctx) => wireBackend(deps, backend, objects, ctx),

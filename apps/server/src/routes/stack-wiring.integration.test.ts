@@ -20,7 +20,7 @@ import { resolveExecutorPluginInstance } from "../coordination/executor-bindings
 import { STACK_TOKEN_SECRET_FIELD } from "../stack/wired-routing.js";
 
 /**
- * M29.2 — THE STANDARD STACK'S WIRING, server side (ADR-0060). A real scpd on Testcontainers
+ * M29.2 — THE STANDARD STACK'S WIRING, server side (ADR-0061). A real scpd on Testcontainers
  * Postgres writing through a real `scp_operator` login; the controller is played by its own
  * install-time credential and nothing else. What this file proves, each against the M28 class
  * ("a value that decides WHERE work goes or WITH WHAT AUTHORITY, writable by someone who cannot

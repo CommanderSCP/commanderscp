@@ -865,7 +865,7 @@ jobs:
       # upgrade falls back — is this step. It imports @scp/stackd/@scp/sdk from dist, so build first.
       - name: Build what the stack controller suite imports
         run: pnpm exec turbo run build --filter=@scp/server...
-      # M29.2 (ADR-0060) — AND ITS WIRING AGAINST REAL BACKENDS: the controller installs a real
+      # M29.2 (ADR-0061) — AND ITS WIRING AGAINST REAL BACKENDS: the controller installs a real
       # Argo CD, Argo Workflows, Argo Events and Gitea (images from the harness registry, seeded
       # above) and wires each into scpd; a discovery run lists Argo CD's Applications, a trivial
       # workflow is submitted through SCP and observed, and a private Gitea repository is read —

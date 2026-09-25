@@ -84,7 +84,7 @@ export async function assertMayWriteExecutionSystemRouting(
 }
 
 /**
- * THE STANDARD STACK'S REGISTRATIONS ARE WRITTEN BY THE STACK ALONE (M29.2, ADR-0060).
+ * THE STANDARD STACK'S REGISTRATIONS ARE WRITTEN BY THE STACK ALONE (M29.2, ADR-0061).
  *
  * An `execution-system` that is a bundled backend's registration (a `stack_backend_registrations`
  * row names it — operator-written, its id allocated before the object) is created, updated and
@@ -125,7 +125,7 @@ export async function assertStackRegistrationWrite(
   throw conflict(
     `cannot ${args.act} ${args.subject}: it is the Standard Stack's registration of the bundled ` +
       `${backend}, whose endpoint, TLS trust, credential and egress are set by the stack controller ` +
-      `(ADR-0060). Manage it on Admin › Stack or with \`scp stack\`; bind components to it as usual.`
+      `(ADR-0061). Manage it on Admin › Stack or with \`scp stack\`; bind components to it as usual.`
   );
 }
 

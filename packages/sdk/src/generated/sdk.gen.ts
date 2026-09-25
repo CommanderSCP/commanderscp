@@ -2590,7 +2590,7 @@ export const putStackStatus = <ThrowOnError extends boolean = false>(options: Op
 });
 
 /**
- * The stack controller unwires a backend it is disabling: its token and wiring are dropped, and every registration of it refuses to resolve until it is wired again (the stack controller's credential ONLY; audited; ADR-0060)
+ * The stack controller unwires a backend it is disabling: its token and wiring are dropped, and every registration of it refuses to resolve until it is wired again (the stack controller's credential ONLY; audited; ADR-0061)
  */
 export const deleteStackWiring = <ThrowOnError extends boolean = false>(options: Options<DeleteStackWiringData, ThrowOnError>): RequestResult<DeleteStackWiringResponses, DeleteStackWiringErrors, ThrowOnError> => (options.client ?? client).delete<DeleteStackWiringResponses, DeleteStackWiringErrors, ThrowOnError>({
     responseValidator: async (data) => await zDeleteStackWiringResponse.parseAsync(data),
@@ -2600,7 +2600,7 @@ export const deleteStackWiring = <ThrowOnError extends boolean = false>(options:
 });
 
 /**
- * The stack controller's hand-off after a backend is healthy: its in-cluster endpoint, the CA that endpoint chains to, the scoped account and the token just minted there. scpd keeps the token encrypted at the instance tier and registers the execution system in every organization the stack serves (the stack controller's credential ONLY; audited; ADR-0060)
+ * The stack controller's hand-off after a backend is healthy: its in-cluster endpoint, the CA that endpoint chains to, the scoped account and the token just minted there. scpd keeps the token encrypted at the instance tier and registers the execution system in every organization the stack serves (the stack controller's credential ONLY; audited; ADR-0061)
  */
 export const putStackWiring = <ThrowOnError extends boolean = false>(options: Options<PutStackWiringData, ThrowOnError>): RequestResult<PutStackWiringResponses, PutStackWiringErrors, ThrowOnError> => (options.client ?? client).put<PutStackWiringResponses, PutStackWiringErrors, ThrowOnError>({
     responseValidator: async (data) => await zPutStackWiringResponse.parseAsync(data),
@@ -2614,7 +2614,7 @@ export const putStackWiring = <ThrowOnError extends boolean = false>(options: Op
 });
 
 /**
- * Rotate a wired backend's credentials: the stack controller mints a new scoped token (and, for Argo Workflows, a new server certificate), hands it to scpd and revokes the old one (instance-operator role or operator credential; audited; ADR-0060)
+ * Rotate a wired backend's credentials: the stack controller mints a new scoped token (and, for Argo Workflows, a new server certificate), hands it to scpd and revokes the old one (instance-operator role or operator credential; audited; ADR-0061)
  */
 export const rotateStackBackend = <ThrowOnError extends boolean = false>(options: Options<RotateStackBackendData, ThrowOnError>): RequestResult<RotateStackBackendResponses, RotateStackBackendErrors, ThrowOnError> => (options.client ?? client).post<RotateStackBackendResponses, RotateStackBackendErrors, ThrowOnError>({
     responseValidator: async (data) => await zRotateStackBackendResponse.parseAsync(data),
@@ -2624,7 +2624,7 @@ export const rotateStackBackend = <ThrowOnError extends boolean = false>(options
 });
 
 /**
- * The organizations the Standard Stack serves — its wired backends are registered in each as execution systems, all driving the same scoped accounts (instance-operator role or operator credential; ADR-0060)
+ * The organizations the Standard Stack serves — its wired backends are registered in each as execution systems, all driving the same scoped accounts (instance-operator role or operator credential; ADR-0061)
  */
 export const listStackServedOrgs = <ThrowOnError extends boolean = false>(options?: Options<ListStackServedOrgsData, ThrowOnError>): RequestResult<ListStackServedOrgsResponses, ListStackServedOrgsErrors, ThrowOnError> => (options?.client ?? client).get<ListStackServedOrgsResponses, ListStackServedOrgsErrors, ThrowOnError>({
     responseValidator: async (data) => await zListStackServedOrgsResponse.parseAsync(data),
@@ -2634,7 +2634,7 @@ export const listStackServedOrgs = <ThrowOnError extends boolean = false>(option
 });
 
 /**
- * Stop serving an organization: its registrations stay (with their bindings) but refuse to resolve, and its tenant transactions can no longer read any stack token (instance-operator role or operator credential; audited; ADR-0060)
+ * Stop serving an organization: its registrations stay (with their bindings) but refuse to resolve, and its tenant transactions can no longer read any stack token (instance-operator role or operator credential; audited; ADR-0061)
  */
 export const detachStackServedOrg = <ThrowOnError extends boolean = false>(options: Options<DetachStackServedOrgData, ThrowOnError>): RequestResult<DetachStackServedOrgResponses, DetachStackServedOrgErrors, ThrowOnError> => (options.client ?? client).delete<DetachStackServedOrgResponses, DetachStackServedOrgErrors, ThrowOnError>({
     responseValidator: async (data) => await zDetachStackServedOrgResponse.parseAsync(data),
@@ -2644,7 +2644,7 @@ export const detachStackServedOrg = <ThrowOnError extends boolean = false>(optio
 });
 
 /**
- * Serve another organization with the Standard Stack: every wired backend is registered there. Its tenants then drive the same scoped backend accounts as every other served org — an instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0060)
+ * Serve another organization with the Standard Stack: every wired backend is registered there. Its tenants then drive the same scoped backend accounts as every other served org — an instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0061)
  */
 export const attachStackServedOrg = <ThrowOnError extends boolean = false>(options: Options<AttachStackServedOrgData, ThrowOnError>): RequestResult<AttachStackServedOrgResponses, AttachStackServedOrgErrors, ThrowOnError> => (options.client ?? client).put<AttachStackServedOrgResponses, AttachStackServedOrgErrors, ThrowOnError>({
     responseValidator: async (data) => await zAttachStackServedOrgResponse.parseAsync(data),

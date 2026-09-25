@@ -43,7 +43,7 @@ CREATE UNIQUE INDEX "stack_backend_registrations_object_uq" ON "stack_backend_re
 --> statement-breakpoint
 
 -- ===========================================================================================
--- M29.2 (ADR-0060) — hand-appended: grants and RLS, which drizzle-kit cannot express.
+-- M29.2 (ADR-0061) — hand-appended: grants and RLS, which drizzle-kit cannot express.
 --
 -- All four tables are INSTANCE-TIER and OPERATOR-WRITE: the stack controller's wiring hand-off and
 -- the stack's registrations are written only through scp_operator (the controller's credential for

@@ -124,14 +124,14 @@ subjects:
     namespace: {{ $sns }}
 ---
 {{/*
-M29.2 (ADR-0060) — THE NETWORK HALF OF A WIRED BACKEND'S EGRESS. When the controller wires a
+M29.2 (ADR-0061) — THE NETWORK HALF OF A WIRED BACKEND'S EGRESS. When the controller wires a
 backend into SCP it writes ONE NetworkPolicy into SCP's own namespace, `scp-stack-egress-<backend>`,
 letting scpd's pods reach exactly that backend's pods on its container port — derived from the
 backend's rendered Service, so the endpoint the app-layer egress opens and the one the network opens
 are the same object (no value to set in two places). NetworkPolicies ONLY: no Secret, no workload,
 nothing that reads scpd's credentials. get/patch/delete are held to the three policy names;
 `create` cannot be limited by name in RBAC, so what the controller could add is further allow-only
-policies here — stated in ADR-0060, and bounded by what this controller already holds cluster-wide.
+policies here — stated in ADR-0061, and bounded by what this controller already holds cluster-wide.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

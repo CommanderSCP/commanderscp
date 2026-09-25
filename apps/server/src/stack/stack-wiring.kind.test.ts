@@ -30,7 +30,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { resolveExecutorPluginInstance } from "../coordination/executor-bindings-repo.js";
 
 /**
- * M29.2 DoD, AGAINST REAL BACKENDS (ADR-0060). A real scpd (Testcontainers Postgres, real
+ * M29.2 DoD, AGAINST REAL BACKENDS (ADR-0061). A real scpd (Testcontainers Postgres, real
  * `scp_operator` writes), the real stack controller with the chart's own stackd identity, and a kind
  * cluster in which the controller installs a REAL Argo CD, Argo Workflows, Argo Events and Gitea.
  * For each, enabling it THROUGH THE API ALONE must yield a registered execution system and a real

@@ -394,7 +394,7 @@ describe("Admin › Stack", () => {
     ).toBe(false);
   });
 
-  // ---- M29.2 (ADR-0060) -----------------------------------------------------------------------
+  // ---- M29.2 (ADR-0061) -----------------------------------------------------------------------
 
   it("M29.2: each backend's wiring is shown — where scpd reaches it and the CA it trusts; Rollouts is n/a", async () => {
     const page = await mount();

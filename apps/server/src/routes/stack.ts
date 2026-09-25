@@ -621,7 +621,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
     }
   });
 
-  // ---- M29.2: wiring (ADR-0060) --------------------------------------------------------------
+  // ---- M29.2: wiring (ADR-0061) --------------------------------------------------------------
 
   typed.route({
     method: "PUT",
@@ -635,7 +635,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       openapi: {
         operationId: "putStackWiring",
         summary:
-          "The stack controller's hand-off after a backend is healthy: its in-cluster endpoint, the CA that endpoint chains to, the scoped account and the token just minted there. scpd keeps the token encrypted at the instance tier and registers the execution system in every organization the stack serves (the stack controller's credential ONLY; audited; ADR-0060)",
+          "The stack controller's hand-off after a backend is healthy: its in-cluster endpoint, the CA that endpoint chains to, the scoped account and the token just minted there. scpd keeps the token encrypted at the instance tier and registers the execution system in every organization the stack serves (the stack controller's credential ONLY; audited; ADR-0061)",
         tags: ["stack"]
       }
     },
@@ -681,7 +681,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       openapi: {
         operationId: "deleteStackWiring",
         summary:
-          "The stack controller unwires a backend it is disabling: its token and wiring are dropped, and every registration of it refuses to resolve until it is wired again (the stack controller's credential ONLY; audited; ADR-0060)",
+          "The stack controller unwires a backend it is disabling: its token and wiring are dropped, and every registration of it refuses to resolve until it is wired again (the stack controller's credential ONLY; audited; ADR-0061)",
         tags: ["stack"]
       }
     },
@@ -705,7 +705,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       openapi: {
         operationId: "rotateStackBackend",
         summary:
-          "Rotate a wired backend's credentials: the stack controller mints a new scoped token (and, for Argo Workflows, a new server certificate), hands it to scpd and revokes the old one (instance-operator role or operator credential; audited; ADR-0060)",
+          "Rotate a wired backend's credentials: the stack controller mints a new scoped token (and, for Argo Workflows, a new server certificate), hands it to scpd and revokes the old one (instance-operator role or operator credential; audited; ADR-0061)",
         tags: ["stack"]
       }
     },
@@ -761,7 +761,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       openapi: {
         operationId: "listStackServedOrgs",
         summary:
-          "The organizations the Standard Stack serves — its wired backends are registered in each as execution systems, all driving the same scoped accounts (instance-operator role or operator credential; ADR-0060)",
+          "The organizations the Standard Stack serves — its wired backends are registered in each as execution systems, all driving the same scoped accounts (instance-operator role or operator credential; ADR-0061)",
         tags: ["stack"]
       }
     },
@@ -779,7 +779,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       openapi: {
         operationId: "attachStackServedOrg",
         summary:
-          "Serve another organization with the Standard Stack: every wired backend is registered there. Its tenants then drive the same scoped backend accounts as every other served org — an instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0060)",
+          "Serve another organization with the Standard Stack: every wired backend is registered there. Its tenants then drive the same scoped backend accounts as every other served org — an instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0061)",
         tags: ["stack"]
       }
     },
@@ -806,7 +806,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       openapi: {
         operationId: "detachStackServedOrg",
         summary:
-          "Stop serving an organization: its registrations stay (with their bindings) but refuse to resolve, and its tenant transactions can no longer read any stack token (instance-operator role or operator credential; audited; ADR-0060)",
+          "Stop serving an organization: its registrations stay (with their bindings) but refuse to resolve, and its tenant transactions can no longer read any stack token (instance-operator role or operator credential; audited; ADR-0061)",
         tags: ["stack"]
       }
     },

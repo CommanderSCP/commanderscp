@@ -88,7 +88,7 @@ const KNOWN_DISCOVERY_MODULES: PluginModule[] = [
   "argocd-discovery"
 ];
 
-/** M29.2 (ADR-0060): run-config keys a discovery against a Standard Stack registration never takes
+/** M29.2 (ADR-0061): run-config keys a discovery against a Standard Stack registration never takes
  *  from the caller — each names an endpoint or a credential, which only the wiring decides. */
 const STACK_RUN_CONFIG_REFUSED = new Set([
   "serverUrl",
@@ -965,7 +965,7 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           if (sys.typeId !== "execution-system") {
             throw badRequest(`'${execSysRef}' is a '${sys.typeId}', not an execution-system`);
           }
-          // M29.2 (ADR-0060): a Standard Stack registration is routed by the controller's wiring —
+          // M29.2 (ADR-0061): a Standard Stack registration is routed by the controller's wiring —
           // endpoint, token, CA and egress — exactly as the binding path routes it.
           const stack = await stackWiredRouting(
             tx,

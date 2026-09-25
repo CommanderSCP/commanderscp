@@ -162,7 +162,7 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
   };
   const backendNamespaces = chartValues.stackd.backendNamespaces;
   const stateRole = `${sa}-state`;
-  /** M29.2 (ADR-0060): the one right the controller holds in SCP's own namespace. */
+  /** M29.2 (ADR-0061): the one right the controller holds in SCP's own namespace. */
   const egressRole = `${sa}-egress`;
   const expectedAdded = new Set([
     `Namespace//${sns}`,
@@ -341,10 +341,10 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
       "[stackd] the controller's pod template carries no checksum of its credential — a rotation would not roll it"
     );
   }
-  // M29.2 (ADR-0060): IN SCP'S OWN NAMESPACE THE CONTROLLER MAY WRITE NETWORKPOLICIES AND NOTHING
+  // M29.2 (ADR-0061): IN SCP'S OWN NAMESPACE THE CONTROLLER MAY WRITE NETWORKPOLICIES AND NOTHING
   // ELSE — the per-backend egress policies it opens for scpd when it wires a backend. No Secret (the
   // release namespace holds scpd's database credentials), no workload, no pod: get/patch/delete are
-  // held to the three policy names; `create` cannot be limited by name in RBAC, which ADR-0060 states.
+  // held to the three policy names; `create` cannot be limited by name in RBAC, which ADR-0061 states.
   {
     const egressRules = (on.find((d) => docKey(d) === `Role/${ns}/${egressRole}`)?.["rules"] ??
       []) as Rule[];

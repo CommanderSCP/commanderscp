@@ -146,7 +146,7 @@ export interface PluginHostInstanceConfig {
   /** Relax the SSRF egress guard's internal-IP block. See docs/plugin-host.md §24. */
   allowInternalEgress?: boolean;
   /**
-   * M29.2 (ADR-0060): an ADDITIONAL trust anchor for THIS instance only — the CA the stack
+   * M29.2 (ADR-0061): an ADDITIONAL trust anchor for THIS instance only — the CA the stack
    * controller published for a bundled backend's endpoint (argo-server's self-signed certificate).
    * Set by the resolver ONLY from `stack_backend_wirings` for a stack-registered system, never from
    * tenant config or an execution-system property. Extends trust (system roots stay), never

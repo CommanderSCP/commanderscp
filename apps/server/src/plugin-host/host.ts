@@ -442,7 +442,7 @@ export class SubprocessPluginHost implements PluginHost {
       // Its own env var (not `SCP_PLUGIN_CONFIG_JSON`), so a plugin's `config` can never spoof it.
       SCP_PLUGIN_ALLOW_INTERNAL_EGRESS: String(instance.config.allowInternalEgress === true)
     };
-    // M29.2 (ADR-0060): the per-instance trust anchor the resolver took from the stack
+    // M29.2 (ADR-0061): the per-instance trust anchor the resolver took from the stack
     // controller's wiring — never from config, so a plugin's `config` cannot name one.
     if (instance.config.trustedCaPem) env.SCP_PLUGIN_TRUSTED_CA_PEM = instance.config.trustedCaPem;
     // The federation mutual-TLS material handed to a subprocess. See docs/plugin-host.md §60.

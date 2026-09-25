@@ -5,7 +5,7 @@ import { conflict } from "../errors.js";
 import { decryptSecretValue } from "../secrets/crypto.js";
 
 /**
- * HOW A STANDARD STACK REGISTRATION IS ROUTED (M29.2, ADR-0060) — the read half of
+ * HOW A STANDARD STACK REGISTRATION IS ROUTED (M29.2, ADR-0061) — the read half of
  * `stack/wiring.ts`, kept free of route and operator-connection imports because the executor
  * resolver and the discovery door both call it from inside a tenant transaction.
  */

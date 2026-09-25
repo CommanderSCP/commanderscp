@@ -277,7 +277,7 @@ D6 (§7.3) boot-safety check, extracted from `main.ts` so it is directly testabl
 The install-time Helm hook that minted a scoped Argo CD token into the bootstrap org's secret store
 and printed a `scp executor bind` command to its pod log. It is gone: the stack controller wires
 every healthy bundled backend itself — token, CA, both egress layers and the execution-system
-registration — in the same reconcile that installed it (`apps/stackd/src/wiring.ts`, ADR-0060). The
+registration — in the same reconcile that installed it (`apps/stackd/src/wiring.ts`, ADR-0061). The
 token no longer lands in an org's secret store, where any execution system a tenant registered could
 name it by key; it is kept encrypted at the instance tier (`stack_backend_tokens`).
 

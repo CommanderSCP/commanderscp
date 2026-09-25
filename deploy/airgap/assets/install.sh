@@ -447,7 +447,7 @@ if [[ "$MODE" == "helm" ]]; then
   # page, `scp stack enable`), it pulls the bytes this bundle carried from this registry, never
   # quay.io. Only the controller's retargetable image fields are passed (the controller refuses any
   # other key): catalog.ops.runnerImage is not one — the controller renders no ops catalog.
-  # M29.2 (ADR-0060): the controller is TURNED ON here. It is the only way a bundled backend is
+  # M29.2 (ADR-0061): the controller is TURNED ON here. It is the only way a bundled backend is
   # installed and wired any more (scp-bundled.sh's `enable` is retired), and the bootstrap admin
   # gets the instance-operator role once (the one-shot seam, ADR-0058 §7) so the first login can
   # enable backends on Admin › Stack — no credential to hunt for, no command to run against a
@@ -548,7 +548,7 @@ if [[ "$MODE" == "helm" ]]; then
     helm "${HELM_ARGS[@]}"
     # The bundled backends this bundle carries are installed AND wired by the stack controller the
     # moment one is enabled through SCP — the execution system, its scoped token, TLS trust and
-    # both egress layers, with nothing to run against the backend itself (M29.2, ADR-0060).
+    # both egress layers, with nothing to run against the backend itself (M29.2, ADR-0061).
     if [[ ${#BUNDLED_APPLY[@]} -gt 0 ]]; then
       if [[ -n "${SCP_STACKD_DIGEST:-}" ]]; then
         echo "   STANDARD STACK: this bundle carries ${BUNDLED_APPLY[*]}. Enable any of them on"

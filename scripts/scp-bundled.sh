@@ -2,7 +2,7 @@
 # scp-bundled — RENDER a CommanderSCP Standard Stack backend (diagnostics only).
 #
 # INSTALLING AND WIRING A BUNDLED BACKEND IS THE STACK CONTROLLER'S JOB (M29.4 ADR-0058, M29.2
-# ADR-0060), through SCP itself:
+# ADR-0061), through SCP itself:
 #
 #     scp stack enable argocd          # or Admin › Stack in the web UI
 #
@@ -50,7 +50,7 @@ VERB="$1"; BACKEND="$2"; shift 2
 case "$VERB" in
   render) : ;;
   enable)
-    echo "scp-bundled: 'enable' is retired (M29.2, ADR-0060). The stack controller installs AND wires" >&2
+    echo "scp-bundled: 'enable' is retired (M29.2, ADR-0061). The stack controller installs AND wires" >&2
     echo "  bundled backends through SCP — run:  scp stack enable ${BACKEND}   (or Admin › Stack)." >&2
     echo "  It registers the execution system, its token, TLS trust and egress with no further step." >&2
     exit 2 ;;

@@ -166,7 +166,7 @@ export interface CreateObjectInput extends ScanOverrideGrantDecisionWrite {
   domainLocal?: boolean;
   /** Provenance for the `contains` route, which create cannot see. See docs/graph.md §80. */
   domainLocalInheritedFrom?: { id: string; urn: string };
-  /** M29.2 (ADR-0060): set ONLY by `stack/wiring.ts`, writing a Standard Stack registration.
+  /** M29.2 (ADR-0061): set ONLY by `stack/wiring.ts`, writing a Standard Stack registration.
    *  Never from a request: `assertStackRegistrationWrite`. */
   stackManagedWrite?: boolean;
 }
@@ -578,7 +578,7 @@ export interface UpdateObjectInput extends ScanOverrideGrantDecisionWrite {
   federationImport?: FederationImportContext;
   /** The unverified-shadow adoption hatch, and nothing wider. See docs/graph.md §103. */
   unverifiedShadowOverride?: boolean;
-  /** M29.2 (ADR-0060): see `CreateObjectInput.stackManagedWrite`. */
+  /** M29.2 (ADR-0061): see `CreateObjectInput.stackManagedWrite`. */
   stackManagedWrite?: boolean;
 }
 
@@ -734,7 +734,7 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       subject: `${input.typeId} '${existing.urn}'`
     });
     // M29.2: a Standard Stack registration is written by the stack alone — any other update of it,
-    // by anyone, is refused (its routing is the controller's wiring, ADR-0060).
+    // by anyone, is refused (its routing is the controller's wiring, ADR-0061).
     await assertStackRegistrationWrite(tx, {
       orgId: input.orgId,
       typeId: input.typeId,
@@ -1192,7 +1192,7 @@ export async function deleteObject(
     }
   }
 
-  // M29.2 (ADR-0060): a Standard Stack registration is never removed through this door — disabling
+  // M29.2 (ADR-0061): a Standard Stack registration is never removed through this door — disabling
   // the backend (or no longer serving this org) marks it unwired instead, keeping its bindings.
   if (!input.federationImport) {
     await assertStackRegistrationWrite(tx, {

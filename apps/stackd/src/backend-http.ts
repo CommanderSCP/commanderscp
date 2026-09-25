@@ -2,7 +2,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 
 /**
- * THE CONTROLLER'S CLIENT FOR THE BACKENDS IT JUST INSTALLED (M29.2, ADR-0060) — minting a scoped
+ * THE CONTROLLER'S CLIENT FOR THE BACKENDS IT JUST INSTALLED (M29.2, ADR-0061) — minting a scoped
  * token needs the backend's own API (Argo CD's session and account-token endpoints, Gitea's token
  * endpoint). Plain node:http(s), no redirects followed, bounded. It is handed ONLY URLs the
  * controller derived from its own render (`wiring.ts` `backendEndpoint`), never one from the API:

@@ -2738,7 +2738,7 @@ export const stackSettings = pgTable(
 );
 
 /**
- * HOW EACH BUNDLED BACKEND IS WIRED INTO SCP (M29.2, ADR-0060) — the facts the stack controller
+ * HOW EACH BUNDLED BACKEND IS WIRED INTO SCP (M29.2, ADR-0061) — the facts the stack controller
  * handed over after the backend became healthy: the in-cluster endpoint from its own render, the CA
  * that endpoint's certificate chains to, the scoped account. Instance-tier, tenant-read (the Stack
  * page shows them), and written ONLY by the controller's credential through the operator

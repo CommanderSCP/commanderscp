@@ -154,7 +154,7 @@ bundledExecutor:
     tlsSecretName: argo-server-tls
     # The scoped, non-admin ServiceAccount SCP authenticates as when coordinating this backend —
     # the same shape as `bundledExecutor.argocd.scpAccount` and `gitea.scpAccount`. The stack
-    # controller hands its bound token to SCP when it wires the backend (M29.2, ADR-0060).
+    # controller hands its bound token to SCP when it wires the backend (M29.2, ADR-0061).
     #
     # It is load-bearing rather than cosmetic: argo-server runs `--auth-mode=client`, so every call
     # SCP makes carries THIS account's token and every Kubernetes action is performed AS it. The

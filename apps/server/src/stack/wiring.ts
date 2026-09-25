@@ -26,7 +26,7 @@ import {
 export * from "./wired-routing.js";
 
 /**
- * THE STANDARD STACK'S WIRING INTO SCP (M29.2, ADR-0060).
+ * THE STANDARD STACK'S WIRING INTO SCP (M29.2, ADR-0061).
  *
  * After the stack controller brings a bundled backend to ready, it hands scpd ONE document through
  * a door only its own credential opens (`PUT /instance/stack/backends/{b}/wiring`): the in-cluster

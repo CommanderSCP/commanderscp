@@ -6870,7 +6870,7 @@ export function buildProgram(): Command {
       }
     );
 
-  // M29.2 (ADR-0060): an EXISTING Gitea (Mode A import) — the bundled one is wired by the stack
+  // M29.2 (ADR-0061): an EXISTING Gitea (Mode A import) — the bundled one is wired by the stack
   // controller and needs no command at all. Mirrors `connect argocd`: secret first, then the system.
   connectCmd
     .command("gitea")

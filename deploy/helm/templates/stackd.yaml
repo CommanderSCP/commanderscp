@@ -148,7 +148,7 @@ spec:
               value: {{ .Values.stackd.readyTimeoutSeconds | quote }}
             - name: SCP_STACKD_RESYNC_SECONDS
               value: {{ .Values.stackd.resyncSeconds | quote }}
-            # M29.2 (ADR-0060): the labels that select scpd's api and worker pods — the subject of
+            # M29.2 (ADR-0061): the labels that select scpd's api and worker pods — the subject of
             # the egress NetworkPolicy the controller writes for each backend it wires. The chart's
             # own selector labels, so they cannot drift from the pods they must select.
             - name: SCP_STACKD_SCP_POD_LABELS
@@ -237,7 +237,7 @@ spec:
               {{- include "commanderscp.apiSelectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 8080 }
-    {{- /* M29.2 (ADR-0060): minting a backend's scoped token needs that backend's own API — Argo
+    {{- /* M29.2 (ADR-0061): minting a backend's scoped token needs that backend's own API — Argo
            CD's (argocd-server's container port 8080) and Gitea's (3000), in their own namespaces
            only. Argo Workflows' token is a ServiceAccount token, read through the API server. */}}
     - to:
