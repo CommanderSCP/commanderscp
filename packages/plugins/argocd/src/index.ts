@@ -453,33 +453,40 @@ async function ensureAuthoredApplication(
   const path = `/api/v1/applications/${encodeURIComponent(appName)}`;
   // `?project=` IS REQUIRED to learn that an Application does not exist: real Argo CD answers a GET
   // of a missing one with 403 "permission denied" unless the caller names the project (measured on
-  // kind, M29.3 — the M28.4 stand-in answered 404). One in ANOTHER project is also a 404 here, and
-  // its create then fails as a collision (below) — never an overwrite.
-  const current = await apiRequest(
+  // kind, M29.3 — the M28.4 stand-in answered 404). One in ANOTHER project is also a 404 there, so
+  // the name is then read without the project: an Application holding it answers, and goes through
+  // exactly the checks below (a foreign one is refused before any write); a 403 means none exists.
+  let current = await apiRequest(
     ctx,
     config,
     "GET",
     `${path}?project=${encodeURIComponent(authoring.project)}`
   );
   if (current.status === 404) {
-    const created = await apiRequest(ctx, config, "POST", "/api/v1/applications", doc);
-    if (
-      created.status === 409 ||
-      (created.status === 400 &&
-        /existing application spec is different/.test(JSON.stringify(created.body ?? "")))
-    ) {
-      throw new TriggerRefused(
-        `argocd trigger: an Application named '${appName}' already exists outside the authoring ` +
-          `project — refusing to author over it. Name a different Application in the binding's externalRef.`
-      );
+    const elsewhere = await apiRequest(ctx, config, "GET", path);
+    if (elsewhere.status >= 200 && elsewhere.status < 300) {
+      current = elsewhere;
+    } else {
+      const created = await apiRequest(ctx, config, "POST", "/api/v1/applications", doc);
+      if (
+        created.status === 409 ||
+        (created.status === 400 &&
+          /existing application spec is different/.test(JSON.stringify(created.body ?? "")))
+      ) {
+        // One this account cannot read holds the name: never authored over.
+        throw new TriggerRefused(
+          `argocd trigger: an Application named '${appName}' already exists outside the authoring ` +
+            `project — refusing to author over it. Name a different Application in the binding's externalRef.`
+        );
+      }
+      if (created.status < 200 || created.status >= 300) {
+        throw new Error(
+          `argocd trigger: creating Application '${appName}' returned HTTP ${created.status}`
+        );
+      }
+      ctx.logger.info("argocd: authored Application created", { appName });
+      return;
     }
-    if (created.status < 200 || created.status >= 300) {
-      throw new Error(
-        `argocd trigger: creating Application '${appName}' returned HTTP ${created.status}`
-      );
-    }
-    ctx.logger.info("argocd: authored Application created", { appName });
-    return;
   }
   if (current.status < 200 || current.status >= 300) {
     throw new Error(
