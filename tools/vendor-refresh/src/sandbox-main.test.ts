@@ -1,7 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { BUNDLE_IMAGES_TS_PATH, IMAGES_LIST_PATH, VALUES_YAML_PATH } from "./plan.js";
+import { BUNDLE_IMAGES_TS_PATH, VALUES_YAML_PATH } from "./plan.js";
 import { runSandbox, type FullSandboxInput } from "./sandbox-main.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -116,7 +116,8 @@ describe("runSandbox — gitea (real helm against a LOCAL fixture chart — no n
       },
       currentVendoredFiles: {},
       valuesYaml: "gitea:\n  image: docker.gitea.com/gitea:1.26.0-fixture-rootless\n",
-      bundleImagesTs: '{ name: "gitea", defaultRef: "docker.gitea.com/gitea:1.26.0-fixture-rootless" }\n',
+      bundleImagesTs:
+        '{ name: "gitea", defaultRef: "docker.gitea.com/gitea:1.26.0-fixture-rootless" }\n',
       imagesList: ""
     };
     const { plan, classification } = await runSandbox(input);

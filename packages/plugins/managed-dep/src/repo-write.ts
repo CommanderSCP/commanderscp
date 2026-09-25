@@ -790,7 +790,8 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
               );
               const existingTreeSha =
                 existingCommit.status === 200
-                  ? (((existingCommit.body as { tree?: { sha?: unknown } }).tree?.sha ?? "") as string)
+                  ? (((existingCommit.body as { tree?: { sha?: unknown } }).tree?.sha ??
+                      "") as string)
                   : "";
               if (!existingTreeSha || existingTreeSha !== newTreeSha) {
                 throw new Error(

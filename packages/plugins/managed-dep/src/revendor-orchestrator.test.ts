@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { PluginContext, ScopedHttpRequest, ScopedHttpResponse } from "@scp/plugin-api";
 import {
   BACKEND_VERIFICATION,
@@ -59,7 +59,9 @@ describe("resolveTagCommitSha", () => {
 
   it("refuses a non-200 response", async () => {
     const ctx = ctxWith(() => ({ status: 404, headers: {}, body: {} }));
-    await expect(resolveTagCommitSha(ctx, "argoproj/argo-cd", "v3.5.0")).rejects.toThrow(/HTTP 404/);
+    await expect(resolveTagCommitSha(ctx, "argoproj/argo-cd", "v3.5.0")).rejects.toThrow(
+      /HTTP 404/
+    );
   });
 
   /** MUTATION-PROVE: a provider that returns something that is not a well-formed 40-hex sha (a
@@ -207,7 +209,8 @@ describe("resolveAndVerifyTrackedDigests fail-closed (exercised indirectly via o
       secrets: { get: async () => undefined },
       http: {
         request: async (req: ScopedHttpRequest): Promise<ScopedHttpResponse> => {
-          if (req.url.includes("/commits/v3.5.0")) return { status: 200, headers: {}, body: { sha: "c".repeat(40) } };
+          if (req.url.includes("/commits/v3.5.0"))
+            return { status: 200, headers: {}, body: { sha: "c".repeat(40) } };
           if (req.url.includes("raw.githubusercontent.com"))
             return {
               status: 200,

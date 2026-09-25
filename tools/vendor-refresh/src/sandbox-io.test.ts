@@ -51,7 +51,15 @@ describe("buildSandboxIO — runHelmTemplate", () => {
   it("passes args through UNCHANGED for a repo-qualified chart ref (the human/test shape)", async () => {
     const execFn = vi.fn().mockReturnValue("rendered");
     const io = buildSandboxIO(BASE_INPUT, execFn);
-    const args = ["template", "scp-gitea", "gitea-charts/gitea", "--version", "12.7.0", "--namespace", "scp-gitea"];
+    const args = [
+      "template",
+      "scp-gitea",
+      "gitea-charts/gitea",
+      "--version",
+      "12.7.0",
+      "--namespace",
+      "scp-gitea"
+    ];
     const out = await io.runHelmTemplate(args);
     expect(out).toBe("rendered");
     expect(execFn).toHaveBeenCalledWith("helm", args);

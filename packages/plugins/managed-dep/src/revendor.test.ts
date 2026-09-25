@@ -148,7 +148,10 @@ function revendorGithubHandler(
     if (req.url === "https://api.github.com/repos/argoproj/argo-cd/commits/v3.5.0") {
       return { status: 200, headers: {}, body: { sha: FIXTURE_SHA } };
     }
-    if (req.url === `https://raw.githubusercontent.com/argoproj/argo-cd/${FIXTURE_SHA}/manifests/install.yaml`) {
+    if (
+      req.url ===
+      `https://raw.githubusercontent.com/argoproj/argo-cd/${FIXTURE_SHA}/manifests/install.yaml`
+    ) {
       return { status: 200, headers: {}, body: FIXTURE_MANIFEST };
     }
     if (req.url.endsWith("/access_tokens")) {
@@ -374,7 +377,10 @@ describe("trigger() dispatches 're-vendor' through the real managed-dep path (E2
         ""
       ].join("\n");
     const handler = (req: ScopedHttpRequest): ScopedHttpResponse => {
-      if (req.url === `https://raw.githubusercontent.com/argoproj/argo-cd/${FIXTURE_SHA}/manifests/install.yaml`) {
+      if (
+        req.url ===
+        `https://raw.githubusercontent.com/argoproj/argo-cd/${FIXTURE_SHA}/manifests/install.yaml`
+      ) {
         return { status: 200, headers: {}, body: manifestWithBinding };
       }
       return revendorGithubHandler(REPO_FILES)(req);
@@ -406,9 +412,9 @@ describe("trigger() dispatches 're-vendor' through the real managed-dep path (E2
     // exists (opened) and stands for a human.
     expect(status.detail).toMatch(/opened as/);
     expect(status.detail).not.toMatch(/merged as/);
-    expect(calls.some((c) => c.method === "PUT" && c.url.includes("/pulls/") && c.url.endsWith("/merge"))).toBe(
-      false
-    );
+    expect(
+      calls.some((c) => c.method === "PUT" && c.url.includes("/pulls/") && c.url.endsWith("/merge"))
+    ).toBe(false);
   });
 
   /** MUTATION-PROVE (owner decision, "the target repository is the one CommanderSCP is configured
@@ -417,7 +423,7 @@ describe("trigger() dispatches 're-vendor' through the real managed-dep path (E2
    *  minted, regardless of how well-formed the rest of the descriptor is. */
   it("REFUSES a descriptor whose repo does not match the configured scpRepo", async () => {
     const { ctx, calls } = revendorCtx();
-    ctx.config = { ...(ctx.config as object), scpRepo: "someone-else/other-repo" };
+    ctx.config = { ...ctx.config, scpRepo: "someone-else/other-repo" };
     const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());
     const ref = await plugin.trigger(ctx, {
       kind: "custom",

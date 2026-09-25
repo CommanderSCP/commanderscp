@@ -79,7 +79,9 @@ export async function runSandbox(
     .filter((f: VendorFile) => isVendoredManifestYaml(f.path))
     .map((f: VendorFile) => f.content)
     .join("\n---\n");
-  const trackedCoordinates = plan.trackedImages.map((t) => t.tagRef.slice(0, t.tagRef.lastIndexOf(":")));
+  const trackedCoordinates = plan.trackedImages.map((t) =>
+    t.tagRef.slice(0, t.tagRef.lastIndexOf(":"))
+  );
   const classification = classifyRevendorDiff(oldConcatenated, newConcatenated, trackedCoordinates);
 
   return { plan, classification };

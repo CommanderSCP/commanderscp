@@ -51,7 +51,6 @@ import {
   isBackendName,
   isValidCommitSha,
   isValidUpstreamTag,
-  runSandbox,
   VALUES_YAML_PATH,
   type BackendName,
   type DiffClassification,
@@ -98,7 +97,13 @@ let giteaRepoAdded = false;
 async function realFetchGiteaChart(chartVersion: string, destDir: string): Promise<string> {
   const helm = resolveHelmBin();
   if (!giteaRepoAdded) {
-    execFileSync(helm, ["repo", "add", GITEA_CHART_REPO_NAME, GITEA_CHART_REPO_URL, "--force-update"]);
+    execFileSync(helm, [
+      "repo",
+      "add",
+      GITEA_CHART_REPO_NAME,
+      GITEA_CHART_REPO_URL,
+      "--force-update"
+    ]);
     execFileSync(helm, ["repo", "update", GITEA_CHART_REPO_NAME]);
     giteaRepoAdded = true;
   }
@@ -135,7 +140,8 @@ export const BACKEND_VERIFICATION: Record<BackendName, BackendVerification> = {
     identity: {
       // Confirmed against docs/operator-manual/signed-release-assets.md (argoproj/argo-cd, measured
       // 2026-09-25): every Argo CD container image is cosign-signed, keyless, by this workflow.
-      identityRegexp: "^https://github\\.com/argoproj/argo-cd/\\.github/workflows/image-reuse\\.yaml@refs/tags/",
+      identityRegexp:
+        "^https://github\\.com/argoproj/argo-cd/\\.github/workflows/image-reuse\\.yaml@refs/tags/",
       oidcIssuer: "https://token.actions.githubusercontent.com"
     }
   },
@@ -179,7 +185,9 @@ export async function resolveTagCommitSha(
   tag: string
 ): Promise<string> {
   if (!isValidUpstreamTag(tag)) {
-    throw new Error(`vendor-refresh orchestrator: '${tag}' is not a well-formed upstream release tag`);
+    throw new Error(
+      `vendor-refresh orchestrator: '${tag}' is not a well-formed upstream release tag`
+    );
   }
   const res = await ctx.http.request({
     method: "GET",
@@ -351,7 +359,9 @@ async function readCurrentTagFromRepo(
 ): Promise<string> {
   const file = await session.readFile(VALUES_YAML_PATH, baseBranch);
   if (file === undefined) {
-    throw new Error(`vendor-refresh orchestrator: '${VALUES_YAML_PATH}' is not present at '${baseBranch}'`);
+    throw new Error(
+      `vendor-refresh orchestrator: '${VALUES_YAML_PATH}' is not present at '${baseBranch}'`
+    );
   }
   const coordinate = primaryCoordinate(backend);
   const escaped = coordinate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -401,7 +411,12 @@ async function runVendorSandbox(
     env: [],
     secretEnv: [],
     copyIn: [{ hostDir: inDir, containerPath: "/work/in" }],
-    copyOut: { containerPath: "/work/out", hostDir: outDir, when: "on-success", onFailure: "propagate" },
+    copyOut: {
+      containerPath: "/work/out",
+      hostDir: outDir,
+      when: "on-success",
+      onFailure: "propagate"
+    },
     timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxBuffer: MAX_FETCH_BYTES
   });
@@ -481,7 +496,9 @@ export async function orchestrateRevendor(
       [IMAGES_LIST_PATH, imagesList]
     ] as const) {
       if (file === undefined) {
-        throw new Error(`vendor-refresh orchestrator: '${label}' is not present at '${baseBranch}'`);
+        throw new Error(
+          `vendor-refresh orchestrator: '${label}' is not present at '${baseBranch}'`
+        );
       }
     }
 

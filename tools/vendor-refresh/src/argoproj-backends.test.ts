@@ -81,7 +81,14 @@ describe("argoprojManifestUrl", () => {
   });
 
   it("argoprojManifestUrlBySha refuses a malformed sha (same P1 hazard, sha-shaped)", () => {
-    for (const bad of ["", "not-hex", "a".repeat(39), "a".repeat(41), "A".repeat(40), "../../etc/passwd"]) {
+    for (const bad of [
+      "",
+      "not-hex",
+      "a".repeat(39),
+      "a".repeat(41),
+      "A".repeat(40),
+      "../../etc/passwd"
+    ]) {
       expect(isValidCommitSha(bad), JSON.stringify(bad)).toBe(false);
       expect(() => argoprojManifestUrlBySha(ARGOPROJ_BACKENDS.argocd, bad)).toThrow(
         /not a well-formed 40-hex-character commit sha/
