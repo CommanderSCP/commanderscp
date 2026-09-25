@@ -86,6 +86,21 @@ vi.mock("@scp/sdk", () => {
       detachOrg: async (...args: unknown[]) => (
         calls.push({ method: "detachOrg", args }),
         { items: [] }
+      ),
+      setCredential: async (...args: unknown[]) => (
+        calls.push({ method: "setCredential", args }),
+        {
+          backend: "argo-workflows",
+          secretName: "scp-build-registry",
+          key: "registryPassword",
+          description: "d",
+          state: "pending",
+          pendingOp: "set",
+          requestedBy: null,
+          requestedAt: null,
+          deliveredAt: null,
+          error: null
+        }
       )
     };
     instanceOperators = {
@@ -152,6 +167,9 @@ describe("scp stack", () => {
     expect(group!.commands.map((c) => c.name()).sort()).toEqual(
       [
         "attach",
+        // M29.5 (ADR-0063): `credential list|set|delete`, `workload-identity set|delete`.
+        "credential",
+        "workload-identity",
         "detach",
         "diagnostics",
         "disable",
@@ -278,5 +296,39 @@ describe("scp stack", () => {
     const out = path.join(configDir, "diag.json");
     await run(["diagnostics", "--out", out]);
     expect(JSON.parse(await readFile(out, "utf8")).stack.settings.upgradeGeneration).toBe(3);
+  });
+
+  it("M29.5: credential set reads the value from --from-file and sends it with the target and the operator credential — never from argv", async () => {
+    const f = path.join(configDir, "token");
+    await writeFile(f, "push-token-xyz\n");
+    await run([
+      "credential",
+      "set",
+      "argo-workflows",
+      "scp-build-registry",
+      "registryPassword",
+      "--from-file",
+      f
+    ]);
+    expect(calls).toEqual([
+      {
+        method: "setCredential",
+        args: [
+          { backend: "argo-workflows", secretName: "scp-build-registry", key: "registryPassword" },
+          "push-token-xyz",
+          "op-token"
+        ]
+      }
+    ]);
+    await expect(
+      run([
+        "credential",
+        "set",
+        "argo-workflows",
+        "scp-build-registry",
+        "registryPassword",
+        "push-token-xyz"
+      ])
+    ).rejects.toThrow();
   });
 });

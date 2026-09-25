@@ -146,6 +146,9 @@ export function registerStackCredentialCommands(stack: Command): void {
 
   cred
     .command("set <backend> <secretName> <key>")
+    // A value typed as a fourth argument is already in shell history: refuse it loudly rather than
+    // ignore it and wait on stdin.
+    .allowExcessArguments(false)
     .description(
       "Enter (or rotate) one key. The value is read from a hidden prompt, from stdin when piped, or from --from-file — never from the command line"
     )

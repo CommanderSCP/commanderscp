@@ -70,7 +70,20 @@ export async function testOperatorDatabaseUrl(): Promise<string> {
   const admin = new pg.Pool({ connectionString: testDatabaseUrl(), max: 1 });
   try {
     const creds = runtimeCredentials(url);
-    await provisionOperatorRole(admin, creds.user, creds.password);
+    // The role is CLUSTER-global but each worker provisions it from its OWN database, where the
+    // provisioning advisory lock (per database) excludes nobody: two workers' first ALTER ROLE can
+    // race and one fails `tuple concurrently updated` (measured, M29.5, when a third file began
+    // calling this). Retried: the second attempt finds the role already LOGIN with the same
+    // derived password and takes the verify path.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await provisionOperatorRole(admin, creds.user, creds.password);
+        break;
+      } catch (err) {
+        if (attempt >= 5 || !/tuple concurrently updated/.test(String(err))) throw err;
+        await new Promise((r) => setTimeout(r, 50 * attempt));
+      }
+    }
   } finally {
     await admin.end();
   }
