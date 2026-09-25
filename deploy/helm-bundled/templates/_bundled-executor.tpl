@@ -29,13 +29,15 @@ Argo CD / Argo Workflows / Argo Events bundle templates so the 33k-line render l
 Args (dict): ctx (root context `.`), namespace, component (label), manifest (raw yaml string from
 `.Files.Get`), replaces (list of [from, to] pairs), resources (dict: container name -> resource
 block; optional), containerArgs (dict: container name -> list of args APPENDED to the vendored
-ones; optional). Args are appended rather than replaced so upstream's own invocation is preserved
+ones; optional), strategies (dict: Deployment name -> the `spec.strategy` to use instead of
+upstream's; optional — see gitea.yaml for the one caller and why). Args are appended rather than replaced so upstream's own invocation is preserved
 and only augmented — a replace would silently drop whatever upstream adds in a later version.
 */}}
 {{- define "commanderscp.renderVendoredBackend" -}}
 {{- $ns := .namespace -}}
 {{- $res := (.resources | default dict) -}}
 {{- $extraArgs := (.containerArgs | default dict) -}}
+{{- $strategies := (.strategies | default dict) -}}
 {{- $raw := .manifest -}}
 {{- range $pair := (.replaces | default (list)) -}}
 {{- $raw = $raw | replace (index $pair 0) (index $pair 1) -}}
@@ -59,6 +61,9 @@ and only augmented — a replace would silently drop whatever upstream adds in a
 {{- if eq $kind "RoleBinding" -}}{{- $_ := set $obj.metadata "namespace" $ns -}}{{- end -}}
 {{- else if ne $kind "ClusterRole" -}}
 {{- $_ := set $obj.metadata "namespace" $ns -}}
+{{- end -}}
+{{- if and (eq $kind "Deployment") (index $strategies ($obj.metadata.name | default "")) -}}
+{{- $_ := set $obj.spec "strategy" (index $strategies $obj.metadata.name) -}}
 {{- end -}}
 {{- if or (eq $kind "Deployment") (eq $kind "StatefulSet") (eq $kind "DaemonSet") -}}
 {{- $podSpec := ((($obj.spec).template).spec) -}}

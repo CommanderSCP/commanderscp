@@ -29,5 +29,13 @@
       (list "docker.gitea.com/gitea:1.26.1-rootless" $g.image)
     )
     "resources" $g.resources
+    "strategies" (dict "scp-gitea" (dict "type" "Recreate"))
   ) }}
+{{- /* RECREATE, NOT UPSTREAM'S SURGE (M29.4, measured on kind). Upstream ships RollingUpdate with
+       maxSurge 100% / maxUnavailable 0, which cannot complete for THIS profile: one replica on one
+       ReadWriteOnce volume with Gitea's level-db queues, so the surged pod crash-loops on
+       "unable to lock level db at /data/queues/common: resource temporarily unavailable" while
+       the old pod holds the lock. Every change to the pod template — an upgrade, a resize — would
+       never become healthy, and the stack controller would roll it back every time. Recreate
+       stops the old pod first: a short outage, and the only rollout this data shape allows. */}}
 {{- end }}

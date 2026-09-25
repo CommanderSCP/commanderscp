@@ -433,6 +433,48 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     fail("[stackd] the controller may delete CustomResourceDefinitions");
   }
 
+  // ---- ROLLOUTS THAT CAN COMPLETE --------------------------------------------------------------
+  // A Deployment on a ReadWriteOnce claim that SURGES cannot finish a rollout when the app locks
+  // its data (measured on kind: Gitea's level-db queue lock crash-loops the surged pod), and the
+  // controller would roll every upgrade of it back. The property, over every backend's render.
+  let rwoDeployments = 0;
+  for (const backend of StackBackendSchema.options) {
+    const objs = await render(base, backend);
+    const rwoClaims = new Set(
+      objs
+        .filter(
+          (o) =>
+            o.kind === "PersistentVolumeClaim" &&
+            ((o["spec"] as { accessModes?: string[] } | undefined)?.accessModes ?? []).includes(
+              "ReadWriteOnce"
+            )
+        )
+        .map((o) => o.metadata.name)
+    );
+    for (const d of objs.filter((o) => o.kind === "Deployment")) {
+      const spec = d["spec"] as {
+        strategy?: { type?: string };
+        template?: { spec?: { volumes?: { persistentVolumeClaim?: { claimName?: string } }[] } };
+      };
+      const onRwo = (spec.template?.spec?.volumes ?? []).some(
+        (v) =>
+          v.persistentVolumeClaim?.claimName && rwoClaims.has(v.persistentVolumeClaim.claimName)
+      );
+      if (!onRwo) continue;
+      rwoDeployments += 1;
+      if (spec.strategy?.type !== "Recreate") {
+        fail(
+          `[stackd] ${backend}'s Deployment '${d.metadata.name}' mounts a ReadWriteOnce claim and rolls out with '${spec.strategy?.type ?? "RollingUpdate"}' — a surged pod cannot take the volume's data lock, so every upgrade would fail and be rolled back. Give it strategy Recreate (renderVendoredBackend "strategies")`
+        );
+      }
+    }
+  }
+  if (rwoDeployments === 0) {
+    fail(
+      "[stackd] the RWO-rollout census found no Deployment on a ReadWriteOnce claim — Gitea has one, so the census is not looking"
+    );
+  }
+
   // ---- DETERMINISM -----------------------------------------------------------------------------
   for (const backend of StackBackendSchema.options) {
     const a = fingerprint(await render(base, backend));
