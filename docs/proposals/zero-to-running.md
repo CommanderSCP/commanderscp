@@ -10,7 +10,31 @@ adopted as D1–D4:
 - **D1 (Q1):** a separate stack controller installs and operates the bundled backends.
 - **D2 (Q2):** credentials use write-only passthrough, with workload identity preferred.
 - **D3 (Q3):** the Standard Stack is on by default for a new install, sized by role.
-- **D4 (Q4):** backend UIs are hidden, with an audited, read-only break-glass link.
+- **D4 (Q4):** backend UIs are hidden, with an audited, read-only break-glass link. **Refined the same day:** two
+  kinds of UI are deliberately left open, as below.
+
+**Refinements, owner 2026-09-25 (second ruling):**
+
+- **D5, bring-your-own means import and take over.** A customer who already runs Argo CD, Gitea, Harbor, GitLab or
+  GitHub imports it into the stack, and from then on SCP operates it like a bundled one. Import is the entry path; the
+  customer is not asked to keep operating it by hand.
+- **D6, the git forge is a choice:** bundled Gitea, GitLab or GitHub. The artifact registry is likewise a choice:
+  bundled Gitea (ADR-0012), an imported Harbor, GHCR, and so on.
+- **D7, the two exceptions to "SCP is the entire surface":**
+  1. **Git repositories:** the forge's own UI, for pull requests, review and browsing code.
+  2. **Artifact repositories** (images, RPMs, npm packages, …): the registry's own UI, for browsing what is available.
+
+  Everything else about those systems (creating repos, access, webhooks, tokens, retention, upgrades) still happens
+  through SCP. Every other backend UI stays hidden, per D4.
+
+**Open under D5: what "takes over" means for an imported instance.** SCP can operate an imported system's configuration
+(access, projects, webhooks, tokens, the wiring in §6) without owning its installation. Taking over its *lifecycle* as
+well (upgrades, sizing) means SCP applying its own manifests over an install someone else made, which is safe only when
+that install matches a shape SCP recognises.
+
+- **Recommendation:** configuration takeover on import by default. Offer lifecycle adoption as an explicit step when the
+  install is recognised (for example an upstream-manifest Argo CD) and refuse it, with the reason, when it is not.
+- **SaaS forges** (GitHub, GitLab.com) only ever get configuration takeover.
 
 §8 (M29) is the build plan, pending the owner's go.
 

@@ -540,6 +540,8 @@ Adopted 2026-09-25 (owner decision).
 
 Complexity is why capable platforms get turned away. Every setup and operational act happens through CommanderSCP. The systems it coordinates or bundles sit behind it and are never a surface a user must learn in order to use CommanderSCP.
 
+Two exceptions are deliberate: users work in their git forge's own interface for pull requests and code review, and may browse their artifact registries' own interfaces to see what is available.
+
 ---
 
 ## Automatic by Default
@@ -1482,7 +1484,9 @@ Credentials a backend needs (a registry push token, cloud credentials, a git tok
 
 The Standard Stack is on by default for a new install, sized to the instance's federation role (commander, outpost or retrans). Every backend can instead be brought by the customer (bring-your-own), per backend, at install or later. PostgreSQL remains the only stateful dependency CommanderSCP itself requires; the stack's own stateful services belong to the stack, and by default they use a separate database on the same PostgreSQL server rather than another engine.
 
-A bundled backend's own interface is not exposed by default. A time-boxed, read-only, audited break-glass link exists for support and debugging; every write goes through CommanderSCP.
+A backend a customer already runs (Argo CD, Gitea, Harbor, GitLab, GitHub) is imported into the stack, and CommanderSCP operates it from then on like a bundled one. The git forge and the artifact registry are the customer's choice: the bundled Gitea, GitLab, GitHub, an imported Harbor, and so on.
+
+A backend's own interface is not exposed by default, with two deliberate exceptions: a git forge's interface, for pull requests, review and browsing code; and an artifact registry's interface, for browsing images, packages and other artifacts. Everything else about those systems, and every other backend's interface, goes through CommanderSCP. A time-boxed, read-only, audited break-glass link exists for support and debugging; every write goes through CommanderSCP.
 
 This amendment changes who installs and operates the execution systems CommanderSCP bundles. It does not change the Foundational Principle: CommanderSCP still coordinates, and execution still belongs to execution systems. It extends no class allowlist, adds no executor verb, and grants no credential to the infrastructure those systems manage.
 
