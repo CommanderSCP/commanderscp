@@ -79,8 +79,11 @@ spec:
             - name: SCP_BOOTSTRAP_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ printf "%s-bootstrap-admin" (include "commanderscp.fullname" .) }}
-                  key: password
+                  # #422 review (LIVE RISK): `bootstrap.existingAdminPasswordSecret`, when set,
+                  # points here instead of the chart-generated Secret — see
+                  # secrets-generated.yaml's header comment.
+                  name: {{ .Values.bootstrap.existingAdminPasswordSecret | default (printf "%s-bootstrap-admin" (include "commanderscp.fullname" .)) }}
+                  key: {{ .Values.bootstrap.existingAdminPasswordSecretKey | default "password" }}
           # PRE-STOP DELAY — the difference between "graceful shutdown" and "zero downtime".
           #
           # main.ts already handles SIGTERM with `app.close()`, which drains in-flight requests. That

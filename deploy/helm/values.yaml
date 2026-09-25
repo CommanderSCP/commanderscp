@@ -406,14 +406,32 @@ operatorApi:
 # namespaced rights exist only inside the five backend namespaces below (created by this chart,
 # each with its own RoleBinding), and nothing a tenant writes reaches it (ADR-0058).
 #
-# ON BY DEFAULT SINCE M29.1 (ADR-0058 "the default flip"; ADR-0060 "the front door"): the charter's
-# Managed Standard Stack is on by default for a new install (proposal D3), and `scp install` is no
-# longer what turns this on — a BARE `helm install` gets it too, matching every other bundled-by-
-# default choice this chart makes. Set `stackd.enabled=false` explicitly for a role (or an
-# install) that wants none of it — `scp install --role retrans` does exactly this.
+# DEFAULT: OFF at the chart level, ON through `scp install` (#422 adversarial review of ADR-0060,
+# orchestrator decision — supersedes this ADR's original "the default flip", which this comment's
+# earlier wording described; ADR-0060 §3 and its Consequences now read the corrected way too).
+# The charter's "on by default for new installs" (proposal D3) is honoured through the INSTALLER,
+# not a chart default: `scp install` sets `stackd.enabled=true` explicitly (`--role retrans`
+# leaves it off). Left at the CHART'S own default `false`, an existing GitOps-tracked deployment
+# that never asked for the stack controller is not handed near-cluster-admin rights on its next
+# ordinary sync — only `scp install` (or an operator who types `--set stackd.enabled=true`
+# themselves) ever turns it on. See ADR-0060 §3 for the measured reason a chart-level default was
+# wrong here: under Argo CD (no `helm install`/`upgrade` CLI in the loop, `lookup` returns nothing
+# every render — see the "GENERATED CREDENTIALS UNDER GITOPS" note below this block), a default
+# flip would have also meant "every existing GitOps-tracked release with no opinion on stackd
+# quietly gains it on its next sync," never limited to actual new installs the way `scp install`
+# is.
 # -------------------------------------------------------------------------------------------
 stackd:
-  enabled: true
+  enabled: false
+  # #422 review (LIVE RISK) — an existingSecret-style override for the controller's OWN credential
+  # (a Secret in the CONTROLLER'S namespace — stackd.namespace — carrying one key,
+  # `scp_op_<id>.<secret>`). Set this under GitOps/Argo CD (see deploy/helm/README.md's "GitOps /
+  # Argo CD" section): `lookup` returns nothing under `helm template`, so leaving this empty means
+  # the credential is RE-RANDOMIZED on every sync. Pre-provision the Secret yourself (sops,
+  # External Secrets, sealed-secrets, …) and this chart never generates or reads its value — see
+  # stackd.yaml's header comment for the mechanism.
+  existingCredentialSecret: ""
+  existingCredentialSecretKey: credential
   image:
     repository: ghcr.io/commanderscp/scp-stackd
     # Empty = the scpd image's tag: the stack's versions ARE the SCP release's (E4).
@@ -469,6 +487,15 @@ oidc:
 bootstrap:
   orgName: default
   adminUsername: admin
+  # #422 review (LIVE RISK) — an existingSecret-style override for the bootstrap admin's one-time
+  # password (deploy/helm/templates/secrets-generated.yaml, docs/adr/0060-front-door.md §2). Under
+  # GitOps/Argo CD, `lookup` returns nothing on every render, so leaving this empty means a NEW
+  # random password is generated on every sync (harmless once the admin row already exists —
+  # ensureBootstrapAdmin's existingAdmin check means it's simply never read — but confusing if an
+  # operator goes looking for "the" password and finds a different one each time). Set this to
+  # pre-provision the password yourself instead.
+  existingAdminPasswordSecret: ""
+  existingAdminPasswordSecretKey: password
 
 # THE INSTANCE-OPERATOR ROLE (owner decision 2026-09-25, ADR-0058 §7): the authority to change the
 # Standard Stack for every org, held by a USER and checked against their normal login. The first

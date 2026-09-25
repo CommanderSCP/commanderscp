@@ -22,18 +22,37 @@ ROTATION: replace `<name>` in the controller's namespace, then `helm upgrade`. T
 new credential back, the migrations Job records it and revokes the previous one BY ITS ID (the id
 recorded at provisioning, not a name match), and the pod-template checksum rolls the controller
 onto it (review S2).
+
+GENERATED CREDENTIALS UNDER GitOps (#422 adversarial review, LIVE RISK): `lookup` above returns
+NOTHING under `helm template` with no live cluster context — which is exactly how Argo CD's
+repo-server renders (it never calls `helm install`/`upgrade`, which is the only path that gives
+`lookup` a real API connection). Every sync then looks like a fresh install: BOTH generated values
+below are re-randomized on every render. For `operatorDatabasePassword` this doesn't just churn —
+`apps/server/src/db/provision.ts`'s `scp_operator` provisioning REFUSES a password that differs
+from the role's live one ("refusing to reset the password for role scp_operator"), so the
+migrations Job's PreSync hook fails outright, and every sync after it too. `stackd.enabled`
+defaulting to `false` (values.yaml) means this only bites a release that explicitly turned the
+stack controller on; the fix below is what makes turning it on under GitOps safe.
+`stackd.existingCredentialSecret` and `operatorApi.databaseUrlSecret` (below and in this chart's
+`operatorApi` block) are the two `existingSecret`-style escape hatches: pre-provision each Secret
+(sops, External Secrets, sealed-secrets, …) OUTSIDE this chart's own render, and NEITHER value is
+ever generated, so NEITHER changes on a `lookup`-blind render. See deploy/helm/README.md's
+"GitOps / Argo CD" section for the exact keys and the one-time bootstrap sequence.
 */}}
+{{- $usesExistingCredential := .Values.stackd.existingCredentialSecret }}
+{{- $credentialSecretName := $usesExistingCredential | default $name }}
+{{- $credentialSecretKey := .Values.stackd.existingCredentialSecretKey | default "credential" }}
 {{- $existing := lookup "v1" "Secret" $sns $name }}
 {{- $credential := printf "scp_op_%s.%s" (randAlphaNum 22) (randAlphaNum 43) }}
 {{- if and $existing (hasKey $existing.data "credential") }}
 {{- $credential = index $existing.data "credential" | b64dec }}
 {{- end }}
-{{- $parts := splitn "." 2 (trimPrefix "scp_op_" $credential) }}
 {{- $existingInstall := lookup "v1" "Secret" .Release.Namespace (printf "%s-install" $name) }}
 {{- $operatorDbPassword := randAlphaNum 32 }}
 {{- if and $existingInstall (hasKey $existingInstall.data "operatorDatabasePassword") }}
 {{- $operatorDbPassword = index $existingInstall.data "operatorDatabasePassword" | b64dec }}
 {{- end }}
+{{- if not $usesExistingCredential }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -49,6 +68,7 @@ type: Opaque
 stringData:
   credential: {{ $credential | quote }}
 ---
+{{- end }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -61,8 +81,17 @@ metadata:
     "helm.sh/hook-delete-policy": hook-failed
 type: Opaque
 stringData:
+  {{- if $usesExistingCredential }}
+  # `stackd.existingCredentialSecret` is set: the migrations Job reads the credential itself,
+  # natively, via secretKeyRef on `{{ $credentialSecretName }}`/`{{ $credentialSecretKey }}`
+  # (below) and derives credentialTokenId/credentialSha256 AT RUNTIME
+  # (provision-install.ts's `stackdCredentialMaterial`'s whole-token form) — never here, which
+  # would need `lookup` to read a value this chart does not generate.
+  {{- else }}
+  {{- $parts := splitn "." 2 (trimPrefix "scp_op_" $credential) }}
   credentialTokenId: {{ $parts._0 | quote }}
   credentialSha256: {{ $parts._1 | sha256sum | quote }}
+  {{- end }}
   {{- if eq (include "commanderscp.generatesOperatorDbPassword" .) "true" }}
   operatorDatabasePassword: {{ $operatorDbPassword | quote }}
   {{- end }}
@@ -102,8 +131,11 @@ spec:
       annotations:
         checksum/images: {{ toJson .Values.stackd.imageOverrides | sha256sum }}
         # A replaced credential rolls the controller onto it (review S2). Salted, so the annotation
-        # is not the sha256 the database stores for the same secret.
-        checksum/credential: {{ printf "scp-stackd-rollout:%s" $credential | sha256sum }}
+        # is not the sha256 the database stores for the same secret. With `existingCredentialSecret`
+        # set, this chart never reads the value (that would need `lookup`, unavailable under
+        # GitOps) — the checksum is of the REFERENCE instead, so a roll still happens if the
+        # operator repoints it, without needing to know what it now holds.
+        checksum/credential: {{ if $usesExistingCredential }}{{ printf "scp-stackd-rollout-ref:%s/%s" $credentialSecretName $credentialSecretKey | sha256sum }}{{ else }}{{ printf "scp-stackd-rollout:%s" $credential | sha256sum }}{{ end }}
     spec:
       serviceAccountName: {{ $name }}
       # The only pod in this chart that mounts THIS identity's token.
@@ -128,8 +160,8 @@ spec:
             - name: SCP_STACKD_OPERATOR_CREDENTIAL
               valueFrom:
                 secretKeyRef:
-                  name: {{ $name }}
-                  key: credential
+                  name: {{ $credentialSecretName }}
+                  key: {{ $credentialSecretKey }}
             - name: SCP_STACKD_SCP_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: SCP_STACKD_NAMESPACE

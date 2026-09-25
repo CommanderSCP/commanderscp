@@ -9,7 +9,7 @@ import { parseAllDocuments } from "yaml";
 import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runner-launcher";
 import { opsTemplateShapeProblems } from "@scp/plugin-argo-workflows";
 import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
-import { verifyStackController } from "./stackd.js";
+import { verifyExistingSecretOverrides, verifyStackController } from "./stackd.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
@@ -4312,6 +4312,17 @@ async function main(): Promise<void> {
     ])
   );
   for (const note of await verifyStackController({
+    repoRoot: path.resolve(__dirname, "../../.."),
+    chartDir: CHART_DIR,
+    bundledChartDir: BUNDLED_CHART_DIR,
+    renderChart,
+    fail
+  })) {
+    console.log(note);
+  }
+
+  // #422 adversarial review (LIVE RISK) — GitOps/Argo CD stability of the existingSecret overrides.
+  for (const note of verifyExistingSecretOverrides({
     repoRoot: path.resolve(__dirname, "../../.."),
     chartDir: CHART_DIR,
     bundledChartDir: BUNDLED_CHART_DIR,

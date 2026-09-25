@@ -15,6 +15,20 @@ secrets-table master key must stay stable, or every plugin credential encrypted 
 permanently undecryptable.
 {{- end }}
 
+{{- if not .Values.bootstrap.existingAdminPasswordSecret }}
+
+Bootstrap admin one-time password (#422 review fix — SHOULD-FIX 4): `scp install` reads and prints
+this for you automatically. Installing with plain `helm install`/`helm upgrade` instead, retrieve
+it yourself:
+  kubectl -n {{ .Release.Namespace }} get secret {{ printf "%s-bootstrap-admin" (include "commanderscp.fullname" .) }} -o jsonpath='{.data.password}' | base64 -d; echo
+Username: {{ .Values.bootstrap.adminUsername }}   Org: {{ .Values.bootstrap.orgName }}
+This password is a ONE-TIME credential: the first successful login with it forces a password
+change (`POST /auth/password`, `scp passwd`) before any other API call succeeds — see
+docs/adr/0060-front-door.md §2. Once you've logged in and changed it, blank the Secret's plaintext
+yourself (the chart never deletes it):
+  kubectl -n {{ .Release.Namespace }} patch secret {{ printf "%s-bootstrap-admin" (include "commanderscp.fullname" .) }} --type=merge -p '{"stringData":{"password":""}}'
+{{- end }}
+
 {{- if .Values.ingress.enabled }}
 
 Web UI / API: https://{{ .Values.ingress.host }}

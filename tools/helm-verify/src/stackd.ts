@@ -933,3 +933,159 @@ function verifyStackdNamespaceIsolation(
     `  stack controller namespace: ${points} value-matrix cells (${grantsSeen} bindings) grant nothing in ${p.sns} to anyone but the controller; ${refusals.length} placements refused`
   ];
 }
+
+/**
+ * #422 adversarial review (LIVE RISK) — the `existingSecret`-style overrides for the two Secrets
+ * this file's own header touches (`stackd.existingCredentialSecret`,
+ * `bootstrap.existingAdminPasswordSecret`) must be genuinely STABLE under a `lookup`-blind render
+ * (Argo CD): rendering twice from the SAME inputs must be byte-identical for the objects that
+ * reference them, and the chart must render NEITHER of the two Secrets it would otherwise
+ * generate. A render that still varied between runs (still calling `randAlphaNum`/`randBytes`
+ * somewhere in the referencing path) would silently reintroduce the GitOps regeneration risk this
+ * override exists to remove.
+ */
+export function verifyExistingSecretOverrides(ctx: StackdVerifyContext): string[] {
+  const { fail, renderChart } = ctx;
+  const release = "verify-existing";
+  const ns = "verify-scp";
+  const full = `${release}-commanderscp`;
+
+  const args = [
+    "--namespace",
+    ns,
+    "--set",
+    "stackd.enabled=true",
+    "--set",
+    "stackd.existingCredentialSecret=my-stackd-credential",
+    "--set",
+    "stackd.existingCredentialSecretKey=cred",
+    "--set",
+    "bootstrap.existingAdminPasswordSecret=my-bootstrap-admin",
+    "--set",
+    "bootstrap.existingAdminPasswordSecretKey=pw"
+  ];
+  const first = renderChart(release, args);
+  const second = renderChart(release, args);
+
+  const stackdCredentialSecretName = `${full}-stackd`;
+  const bootstrapSecretName = `${full}-bootstrap-admin`;
+
+  for (const rendered of [first, second]) {
+    if (
+      rendered.some((d) => d.kind === "Secret" && d.metadata?.name === stackdCredentialSecretName)
+    ) {
+      fail(
+        `[stackd] stackd.existingCredentialSecret is set, but the chart still rendered its own ` +
+          `generated credential Secret '${stackdCredentialSecretName}' — the override did not take`
+      );
+    }
+    if (rendered.some((d) => d.kind === "Secret" && d.metadata?.name === bootstrapSecretName)) {
+      fail(
+        `[bootstrap] bootstrap.existingAdminPasswordSecret is set, but the chart still rendered ` +
+          `its own generated Secret '${bootstrapSecretName}' — the override did not take`
+      );
+    }
+  }
+
+  interface SecretRef {
+    name?: string;
+    valueFrom?: { secretKeyRef?: { name?: string; key?: string } };
+  }
+  const envVar = (
+    docs: K8sDoc[],
+    kind: string,
+    name: string,
+    envName: string
+  ): SecretRef | undefined => {
+    const doc = docs.find((d) => {
+      if (d.kind !== kind) return false;
+      return kind === "Job"
+        ? String(d.metadata?.name).includes("-migrate-")
+        : d.metadata?.name === name;
+    });
+    const podTemplate = (doc?.["spec"] as Record<string, unknown> | undefined)?.["template"] as
+      { spec?: { containers?: { env?: SecretRef[] }[] } } | undefined;
+    const env = podTemplate?.spec?.containers?.[0]?.env ?? [];
+    return env.find((e) => e.name === envName);
+  };
+
+  // THE MEANINGFUL ASSERTION (mutation-caught while writing this: a byte-identical-across-renders
+  // check on a secretKeyRef is NOT sensitive to it silently pointing at the WRONG secret — a
+  // secretKeyRef {name, key} is a deterministic reference regardless of what the referenced Secret
+  // holds, so a render that pointed it back at the chart's own generated Secret name would still
+  // "look stable." What actually proves the override took is the reference's NAME/KEY equalling
+  // the configured value, checked directly, not inferred from repeat-render stability).
+  function assertSecretKeyRef(
+    label: string,
+    ref: SecretRef | undefined,
+    expectedName: string,
+    expectedKey: string
+  ): void {
+    const skr = ref?.valueFrom?.secretKeyRef;
+    if (!skr) {
+      fail(`[existing-secret] ${label}: no env var found to check`);
+      return;
+    }
+    if (skr.name !== expectedName || skr.key !== expectedKey) {
+      fail(
+        `[existing-secret] ${label}: expected secretKeyRef {name: ${expectedName}, key: ${expectedKey}}, ` +
+          `got {name: ${skr.name}, key: ${skr.key}} — the existingSecret override is not reaching this env var`
+      );
+    }
+  }
+
+  for (const rendered of [first, second]) {
+    assertSecretKeyRef(
+      "stackd controller's SCP_STACKD_OPERATOR_CREDENTIAL",
+      envVar(rendered, "Deployment", stackdCredentialSecretName, "SCP_STACKD_OPERATOR_CREDENTIAL"),
+      "my-stackd-credential",
+      "cred"
+    );
+    assertSecretKeyRef(
+      "migrations Job's SCP_STACKD_OPERATOR_CREDENTIAL",
+      envVar(rendered, "Job", "", "SCP_STACKD_OPERATOR_CREDENTIAL"),
+      "my-stackd-credential",
+      "cred"
+    );
+    assertSecretKeyRef(
+      "api pod's SCP_BOOTSTRAP_ADMIN_PASSWORD",
+      envVar(rendered, "Deployment", `${full}-api`, "SCP_BOOTSTRAP_ADMIN_PASSWORD"),
+      "my-bootstrap-admin",
+      "pw"
+    );
+  }
+
+  // Byte-identical across two renders is still worth checking (it is the property a
+  // `lookup`-blind GitOps render actually needs), now ALONGSIDE the direct reference check above
+  // rather than instead of it.
+  for (const [label, get] of [
+    [
+      "stackd controller's SCP_STACKD_OPERATOR_CREDENTIAL",
+      (d: K8sDoc[]) =>
+        envVar(d, "Deployment", stackdCredentialSecretName, "SCP_STACKD_OPERATOR_CREDENTIAL")
+    ],
+    [
+      "migrations Job's SCP_STACKD_OPERATOR_CREDENTIAL",
+      (d: K8sDoc[]) => envVar(d, "Job", "", "SCP_STACKD_OPERATOR_CREDENTIAL")
+    ],
+    [
+      "api pod's SCP_BOOTSTRAP_ADMIN_PASSWORD",
+      (d: K8sDoc[]) => envVar(d, "Deployment", `${full}-api`, "SCP_BOOTSTRAP_ADMIN_PASSWORD")
+    ]
+  ] as const) {
+    const a = JSON.stringify(get(first));
+    const b = JSON.stringify(get(second));
+    if (a !== b) {
+      fail(
+        `[existing-secret] ${label} differs across two renders of the SAME inputs (run1=${a}, run2=${b})`
+      );
+    }
+  }
+
+  return [
+    "  existingSecret overrides (stackd.existingCredentialSecret, " +
+      "bootstrap.existingAdminPasswordSecret): neither generated Secret rendered, every " +
+      "referencing secretKeyRef names the CONFIGURED secret (not the chart's own generated one), " +
+      "and every reference is byte-identical across two renders (GitOps/Argo CD stability)"
+  ];
+}

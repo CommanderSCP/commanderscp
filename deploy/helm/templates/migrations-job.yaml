@@ -133,6 +133,20 @@ spec:
             # id and the sha256 of its secret, never the credential itself, which lives only in the
             # controller's own namespace — and, when the chart generated it, gives `scp_operator`
             # its login.
+            {{- if .Values.stackd.existingCredentialSecret }}
+            # #422 review (LIVE RISK) — `stackd.existingCredentialSecret` set: this chart never
+            # computed credentialTokenId/credentialSha256 for it (that would need `lookup` to read
+            # a Secret this chart does not generate, unavailable under GitOps). The Job reads the
+            # RAW credential natively instead (a real secretKeyRef, not a Helm-time read) and
+            # derives both AT RUNTIME — provision-install.ts's `stackdCredentialMaterial` already
+            # supports this form (`SCP_STACKD_OPERATOR_CREDENTIAL` whole-token), the same env name
+            # and parser the controller pod itself uses to read this exact Secret.
+            - name: SCP_STACKD_OPERATOR_CREDENTIAL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.stackd.existingCredentialSecret }}
+                  key: {{ .Values.stackd.existingCredentialSecretKey | default "credential" }}
+            {{- else }}
             - name: SCP_STACKD_CREDENTIAL_TOKEN_ID
               valueFrom:
                 secretKeyRef:
@@ -143,6 +157,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "commanderscp.fullname" . }}-stackd-install
                   key: credentialSha256
+            {{- end }}
             {{- if eq (include "commanderscp.generatesOperatorDbPassword" .) "true" }}
             - name: SCP_PROVISION_OPERATOR_ROLE
               value: "1"
