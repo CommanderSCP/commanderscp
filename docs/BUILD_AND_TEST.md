@@ -2253,7 +2253,9 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     is preferred where available.
     - **DoD:** a registry token entered through the API lets a real build push. The value appears in no SCP table, log or
       audit payload (asserted by scanning for the plaintext). There is no read route (census).
-  - **M29.6 — role stacks.** The outpost and retrans profiles (proposal §5), and import-and-take-over for existing Argo CD,
+  - **M29.6 — role stacks.** The outpost and retrans profiles (proposal §5); **the air-gapped single-node k3s bootstrap
+    for `scp install --bundle` on a machine with no cluster** (M29.1 refuses it with instructions for now, and it is carried
+    here so it is not lost); and import-and-take-over for existing Argo CD,
     Gitea, Harbor, GitLab and GitHub (D5: configuration takeover by default, lifecycle adoption only for recognised
     installs).
     - **DoD:** an outpost install gets exactly its profile; importing a pre-existing Argo CD yields a registered, configured
