@@ -548,6 +548,42 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
     fail("[stackd] the controller may delete CustomResourceDefinitions");
   }
 
+  // ---- THE BACKENDS' OWN IDENTITIES, IN THE CONTROLLER'S NAMESPACE (#421 re-verify) -----------
+  // The matrix above covers what the MAIN chart renders. Once the controller has applied the
+  // backends, their upstream ServiceAccounts hold cluster-wide roles too — so the same property is
+  // evaluated over every backend's render, and each subject that still reaches in is an EXPLICIT,
+  // justified exception (BACKEND_TAKEOVER_EXCEPTIONS) rather than something nobody looked at.
+  {
+    const all: K8sDoc[] = [...on];
+    for (const backend of StackBackendSchema.options) {
+      all.push(...((await render(base, backend)) as unknown as K8sDoc[]));
+    }
+    const isController = (x: Subject) =>
+      x.kind === "ServiceAccount" && x.name === sa && x.namespace === sns;
+    const found = new Map<string, string[]>();
+    for (const line of takeoverGrants(all, sns, isController)) {
+      const subject = line.slice(0, line.indexOf(" may "));
+      found.set(subject, [...(found.get(subject) ?? []), line]);
+    }
+    for (const [subject, lines] of found) {
+      if (!(subject in BACKEND_TAKEOVER_EXCEPTIONS)) {
+        fail(
+          `[stackd] a backend identity reaches into ${sns} with no recorded justification: ${lines.slice(0, 3).join("; ")} — narrow it (bindInNamespace + --namespaced), or record it in BACKEND_TAKEOVER_EXCEPTIONS and ADR-0058 §6`
+        );
+      }
+    }
+    for (const subject of Object.keys(BACKEND_TAKEOVER_EXCEPTIONS)) {
+      if (!found.has(subject)) {
+        fail(
+          `[stackd] BACKEND_TAKEOVER_EXCEPTIONS lists ${subject}, which no longer reaches into ${sns} — delete the stale exception`
+        );
+      }
+    }
+    notes.push(
+      `  backend identities in ${sns}: ${found.size} recorded exception(s) (${[...found.keys()].join(", ")}), no unrecorded one`
+    );
+  }
+
   // ---- ROLLOUTS THAT CAN COMPLETE --------------------------------------------------------------
   // A Deployment on a ReadWriteOnce claim that SURGES cannot finish a rollout when the app locks
   // its data (measured on kind: Gitea's level-db queue lock crash-loops the surged pod), and the
@@ -613,6 +649,25 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
 }
 
 // ---- review B1: nothing else can become the controller ------------------------------------------
+
+/**
+ * THE BACKEND IDENTITIES THAT STILL HOLD A TAKEOVER RIGHT IN THE CONTROLLER'S NAMESPACE, each with
+ * why (ADR-0058 §6). Kubernetes RBAC has no deny: a subject bound cluster-wide to create pods holds
+ * that right in every namespace, and these upstream roles are cluster-wide because the component's
+ * PURPOSE is cluster-wide. Argo Workflows and Argo Events are NOT here — they are narrowed to their
+ * own namespaces (deploy/helm-bundled `bindInNamespace` + `--namespaced`). A subject missing from
+ * this table fails the gate; an entry that no longer matches fails it too.
+ */
+const BACKEND_TAKEOVER_EXCEPTIONS: Record<string, string> = {
+  "ServiceAccount scp-argocd/argocd-application-controller":
+    "Argo CD's application controller applies whatever an Application's manifests hold into the workload namespaces it targets — `*/*` in every namespace is its purpose upstream. Namespace-install would limit Argo CD to its own namespace, i.e. remove the capability SCP bundles it for. Who can make it act: whoever can write an Application/AppProject — SCP's scoped account, and Argo CD's own admin",
+  "ServiceAccount scp-argocd/argocd-server":
+    "argo-server's API serves resource actions (restart, delete, patch) on any managed resource, cluster-wide upstream; it acts only for an authenticated Argo CD user with an RBAC grant to that application. Same namespace-install trade-off as the application controller",
+  "ServiceAccount scp-argocd/argocd-applicationset-controller":
+    "reads Secrets cluster-wide for upstream's ApplicationSets-in-any-namespace (SCM/cluster generator tokens beside each ApplicationSet). SCP creates no ApplicationSet, so this is a NARROWING CANDIDATE (bind it in scp-argocd only), not yet taken: Argo CD is rendered by its own template, and whether v3.4's controller still starts with namespace-only Secret reads is unmeasured — a follow-up, recorded rather than guessed",
+  "ServiceAccount scp-argo-rollouts/argo-rollouts":
+    "Argo Rollouts manages Rollout objects in the WORKLOAD namespaces (it creates their ReplicaSets and reads their Secrets for analysis); a namespaced install would manage only its own, empty namespace (argo-rollouts.yaml). It acts on Rollout objects, which a subject must be able to create in the target namespace first"
+};
 
 /** Rights in the controller's namespace that let their holder run a pod AS the controller (and so
  *  hold its rights), mint its token, or read its credential. `[group, resource, verbs]`. */
