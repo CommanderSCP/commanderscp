@@ -51,34 +51,61 @@ function elementByTestId(html: string, testId: string): string {
 // M29.1 (the front door) — HomePage's routing decision. Pure so it's provable without a DOM,
 // react-query or the mocked SDK a full HomePage render would need.
 describe("isOrgEmpty — HomePage's routing decision (router.tsx)", () => {
-  it("undefined while any one of the three calls hasn't answered — never treated as empty", () => {
+  const allEmpty = {
+    executionSystems: { items: [] },
+    deploymentTargets: { items: [] },
+    components: { items: [] },
+    callerRoleNames: ["Owner"]
+  };
+
+  it("undefined while any one of the three calls (or the caller's own roles) hasn't answered — never treated as empty", () => {
     expect(isOrgEmpty({})).toBeUndefined();
     expect(isOrgEmpty({ executionSystems: { items: [] } })).toBeUndefined();
     expect(
       isOrgEmpty({ executionSystems: { items: [] }, deploymentTargets: { items: [] } })
     ).toBeUndefined();
+    expect(isOrgEmpty({ ...allEmpty, callerRoleNames: undefined })).toBeUndefined();
   });
 
-  it("empty: all three lists are empty", () => {
-    expect(
-      isOrgEmpty({
-        executionSystems: { items: [] },
-        deploymentTargets: { items: [] },
-        components: { items: [] }
-      })
-    ).toBe(true);
+  it("empty: all three lists are empty AND the caller holds an org-representative role", () => {
+    expect(isOrgEmpty(allEmpty)).toBe(true);
   });
 
   it("MUTATION: any ONE non-empty list is enough to keep the ordinary dashboard", () => {
-    const base = {
-      executionSystems: { items: [] },
-      deploymentTargets: { items: [] },
-      components: { items: [] }
-    };
-    expect(isOrgEmpty({ ...base, executionSystems: { items: [{ id: "1" }] } })).toBe(false);
-    expect(isOrgEmpty({ ...base, deploymentTargets: { items: [{ id: "1" }] } })).toBe(false);
-    expect(isOrgEmpty({ ...base, components: { items: [{ id: "1" }] } })).toBe(false);
+    expect(isOrgEmpty({ ...allEmpty, executionSystems: { items: [{ id: "1" }] } })).toBe(false);
+    expect(isOrgEmpty({ ...allEmpty, deploymentTargets: { items: [{ id: "1" }] } })).toBe(false);
+    expect(isOrgEmpty({ ...allEmpty, components: { items: [{ id: "1" }] } })).toBe(false);
   });
+
+  it(
+    "#422 review fix (SHOULD-FIX 8): a narrowly-scoped caller (no Owner/OrgAdmin binding) never " +
+      "gets routed to setup, even when their own scoped view looks empty — the setup flow is an " +
+      "onboarding surface, and 'my view is empty' is not the same claim as 'the org is empty'",
+    () => {
+      expect(isOrgEmpty({ ...allEmpty, callerRoleNames: [] })).toBe(false);
+      expect(isOrgEmpty({ ...allEmpty, callerRoleNames: ["Viewer"] })).toBe(false);
+      expect(isOrgEmpty({ ...allEmpty, callerRoleNames: ["OrgAdmin"] })).toBe(true);
+    }
+  );
+
+  it(
+    "#422 review fix (SHOULD-FIX 8): a PERMANENT query error fails OPEN (never empty, never " +
+      "hangs) — isLoading/data alone cannot tell 'still in flight' apart from 'gave up after " +
+      "retries', which is exactly the hang this closes",
+    () => {
+      expect(isOrgEmpty({ ...allEmpty, anyErrored: true })).toBe(false);
+      // Even with SOME data present, an error on another one of the three still fails open.
+      expect(
+        isOrgEmpty({
+          executionSystems: { items: [] },
+          deploymentTargets: undefined,
+          components: { items: [] },
+          callerRoleNames: ["Owner"],
+          anyErrored: true
+        })
+      ).toBe(false);
+    }
+  );
 });
 
 describe("buildChecklistRows — the honesty math behind every count", () => {

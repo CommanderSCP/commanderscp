@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 import { RootLayout } from "./components/layout/RootLayout";
 import { AuthenticatedLayout } from "./components/layout/AuthenticatedLayout";
 import { LoginPage } from "./routes/login";
+import { ChangePasswordPage } from "./routes/change-password";
 import { DashboardPage } from "./routes/dashboard";
 import { OutpostDashboardPage } from "./routes/outpost-dashboard";
 import { useAuth } from "./lib/auth-context";
@@ -46,6 +47,16 @@ const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
   component: LoginPage
+});
+
+// #422 review fix — parented directly under rootRoute (like /login), never under
+// authenticatedLayoutRoute's AppShell: while `mustChangePassword` is set, every OTHER route's API
+// calls 403 (require-auth.ts), so nav chrome pointing at pages that would just show refusals is
+// the wrong shape here. RequireAuth.tsx redirects a signed-in, must-change-password session here.
+const changePasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/change-password",
+  component: ChangePasswordPage
 });
 
 const authenticatedLayoutRoute = createRoute({
@@ -344,6 +355,7 @@ const registryDetailRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
+  changePasswordRoute,
   authenticatedLayoutRoute.addChildren([
     dashboardRoute,
     deviceRoute,
