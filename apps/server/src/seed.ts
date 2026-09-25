@@ -149,11 +149,17 @@ export async function loginAndSeedDemoData(
   });
   if (!admin) throw new Error("seed: bootstrap admin row vanished mid-seed — cannot reset it");
   const passwordHash = await argon2.hash(bootstrap.oneTimePassword);
-  await db.update(users).set({ passwordHash, mustChangePassword: true }).where(eq(users.id, admin.id));
+  await db
+    .update(users)
+    .set({ passwordHash, mustChangePassword: true })
+    .where(eq(users.id, admin.id));
   // Every session this seed run minted (the login above, and whatever the rest of seedDemoData's
   // client reused) is spent the moment the account resets to its pre-seed state — the operator's
   // real session starts fresh at their own real login, not by inheriting seed.ts's.
-  await db.update(sessions).set({ expiresAt: new Date(0) }).where(eq(sessions.userId, admin.id));
+  await db
+    .update(sessions)
+    .set({ expiresAt: new Date(0) })
+    .where(eq(sessions.userId, admin.id));
 }
 
 /** `pnpm seed` standalone entrypoint. See docs/server.md §92. */

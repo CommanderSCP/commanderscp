@@ -663,7 +663,8 @@ export async function runInstall(
       "-q",
       "scp"
     ]);
-    const alreadyInstalled = existingContainer.code === 0 && existingContainer.stdout.trim().length > 0;
+    const alreadyInstalled =
+      existingContainer.code === 0 && existingContainer.stdout.trim().length > 0;
 
     const env: NodeJS.ProcessEnv = {
       SCP_FEDERATION_ROLE: opts.role,

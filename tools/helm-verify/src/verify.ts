@@ -9,7 +9,11 @@ import { parseAllDocuments } from "yaml";
 import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runner-launcher";
 import { opsTemplateShapeProblems } from "@scp/plugin-argo-workflows";
 import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
-import { verifyBlocking2Guards, verifyExistingSecretOverrides, verifyStackController } from "./stackd.js";
+import {
+  verifyBlocking2Guards,
+  verifyExistingSecretOverrides,
+  verifyStackController
+} from "./stackd.js";
 import { backendEndpoint, egressPolicy, loadRelease, type KubeObject } from "@scp/stackd";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

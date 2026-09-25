@@ -221,10 +221,7 @@ export async function login(
 }
 
 export type ChangePasswordResult =
-  | "changed"
-  | "wrong-current-password"
-  | "no-local-password"
-  | "same-as-current";
+  "changed" | "wrong-current-password" | "no-local-password" | "same-as-current";
 
 /**
  * `POST /auth/password` (#422 review fix — SHOULD-FIX 3). The ONLY door that clears

@@ -1132,10 +1132,7 @@ export function verifyExistingSecretOverrides(ctx: StackdVerifyContext): string[
           `value 'abcdefghijklmnopqrstuv', got ${JSON.stringify(tokenIdVar?.value)}`
       );
     }
-    if (
-      shaVar?.value !==
-      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
-    ) {
+    if (shaVar?.value !== "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd") {
       fail(
         `[existing-secret] migrations Job's SCP_STACKD_CREDENTIAL_SHA256: expected the configured ` +
           `literal value, got ${JSON.stringify(shaVar?.value)}`
@@ -1215,11 +1212,13 @@ export function verifyBlocking2Guards(ctx: StackdVerifyContext): string[] {
         "must stay unrendered until an operator (or scp install) explicitly asks for it"
     );
   }
-  const apiDeploy = baseline.find((d) => d.kind === "Deployment" && d.metadata?.name === `${full}-api`);
+  const apiDeploy = baseline.find(
+    (d) => d.kind === "Deployment" && d.metadata?.name === `${full}-api`
+  );
   const apiEnv =
-    ((apiDeploy?.["spec"] as Record<string, unknown> | undefined)?.["template"] as
-      | { spec?: { containers?: { env?: { name?: string }[] }[] } }
-      | undefined
+    (
+      (apiDeploy?.["spec"] as Record<string, unknown> | undefined)?.["template"] as
+        { spec?: { containers?: { env?: { name?: string }[] }[] } } | undefined
     )?.spec?.containers?.[0]?.env ?? [];
   if (apiEnv.some((e) => e.name === "SCP_BOOTSTRAP_ADMIN_PASSWORD")) {
     fail(
