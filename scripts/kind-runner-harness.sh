@@ -385,8 +385,13 @@ EOF
 # the suite runs in a container that SHARES THE KIND NODE'S NETWORK NAMESPACE — the node's kube-proxy
 # rules route Service IPs from there, and a resolv.conf naming the cluster's CoreDNS with a pod's
 # search path resolves `<svc>.<ns>.svc` the way scpd's own pod would. Nothing about the endpoint is
-# faked or overridden: the URL a test hands a plugin is the one the controller derived. (Not
-# re-created: NetworkPolicy enforcement — kindnet enforces none, see the header.)
+# faked or overridden: the URL a test hands a plugin is the one the controller derived. (EGRESS
+# NetworkPolicy is not enforced here; kindnet enforces ingress only — see the header.)
+#
+# The container runs as the caller's uid, which the node image has no passwd entry for unless it
+# happens to be 1000 (a dev box). Testcontainers calls os.userInfo() and fails with
+# `uv_os_get_passwd ENOENT` without one — CI's runner is 1001 — so the host's passwd and group are
+# mounted read-only.
 #
 # Testcontainers still starts Postgres on the host's daemon; from the node's namespace the host is
 # the kind network's gateway, which TESTCONTAINERS_HOST_OVERRIDE names.
@@ -408,6 +413,8 @@ in_cluster_net() {
     --user "$(id -u):$(id -g)" \
     --group-add "$(stat -c %g /var/run/docker.sock)" \
     -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /etc/passwd:/etc/passwd:ro \
+    -v /etc/group:/etc/group:ro \
     -v "${REPO_ROOT}:${REPO_ROOT}" \
     -v "${WORKDIR}:${WORKDIR}" \
     -v "${WORKDIR}/resolv.conf:/etc/resolv.conf:ro" \
