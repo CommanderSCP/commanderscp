@@ -77,7 +77,9 @@ upgraded them with SCP, and nothing reported their health to SCP.
      together with `stackd-rbac.yaml` by `manifests.test.ts` — and to the backend's own namespace,
      and a stored set is re-stamped with the backend's labels before it is applied. Nothing
      recorded yet (a first report) is trusted on first use; the kind and namespace checks still
-     apply.
+     apply. That TOFU window is real: state written before the controller's first report with
+     digests (or by anyone who can write the controller's namespace before then) is accepted; the
+     namespace isolation of §6 is what keeps that set of writers to the controller itself.
    - **Data is kept** (review S3): disabling a backend removes its workloads and config and KEEPS
      its PersistentVolumeClaims and generate-once Secrets (Gitea's admin password, `SECRET_KEY`,
      `INTERNAL_TOKEN` — losing one locks the data out), recorded as `retained`; enabling it again
@@ -123,6 +125,35 @@ upgraded them with SCP, and nothing reported their health to SCP.
      `default/kubernetes` endpoints, read at install; `networkPolicy.kubeApi.cidrs` when set; the
      private ranges only on an offline render) and scpd's api pods in the release namespace, by
      namespace AND labels (review N3);
+   - **the backends' own identities, stated plainly** (#421 re-verify). RBAC has no deny: an
+     upstream ServiceAccount bound cluster-wide to create pods holds that right in the controller's
+     namespace too. helm-verify evaluates the same takeover property over every backend's render,
+     and every subject that still reaches in is a named, justified exception
+     (`BACKEND_TAKEOVER_EXCEPTIONS` in tools/helm-verify/src/stackd.ts — an unlisted subject, or a
+     listed one that no longer matches, fails the gate):
+     - **narrowed:** Argo Workflows (`argo`, `argo-server`) and Argo Events (`argo-events-sa`) run
+       `--namespaced --managed-namespace=<their namespace>`, and their upstream ClusterRoleBindings
+       are rendered as RoleBindings in their own namespace (`renderVendoredBackend`'s
+       `bindInNamespace`). Measured on kind: a Workflow runs to Succeeded and an EventBus deploys,
+       with no forbidden call, and neither SA can create a pod outside its namespace. Given up,
+       deliberately: the BUNDLED Workflows no longer runs Workflows in other namespaces or
+       ClusterWorkflowTemplates, and the bundled Events reconciles only its own namespace — every
+       catalog template, pin and auto-wired binding SCP ships names those namespaces; a BYO
+       instance is unaffected;
+     - **exceptions, by design:** `argocd-application-controller` (`*/*` — applying Applications
+       into workload namespaces IS Argo CD; a namespace-install would remove what SCP bundles it
+       for), `argocd-server` (resource actions on managed resources, acting for an authenticated
+       Argo CD user with an app grant), `argo-rollouts` (manages Rollouts in workload namespaces;
+       argo-rollouts.yaml). Each acts on objects someone must first be allowed to create;
+     - **exception, a narrowing candidate:** `argocd-applicationset-controller` reads Secrets
+       cluster-wide for ApplicationSets-in-any-namespace, which SCP does not use. Binding it in
+       `scp-argocd` only is likely safe but unmeasured on v3.4, so it is recorded, not guessed;
+     - **what was already true before this ADR:** scpd's `scp-coordinator` account can submit
+       Workflows, and a Workflow naming `serviceAccountName: argo` would have run with that SA's
+       then cluster-wide rights. Tenants cannot choose the SA (the catalog templates fix it), and
+       the narrowing above removes the cluster-wide half. A further, not-built hardening is a
+       ValidatingAdmissionPolicy refusing workload creation in the controller's namespace to anyone
+       but the controller (it cannot cover reads, so it complements RBAC rather than replacing it);
    - the cluster half (`…-stackd-cluster`: CRDs get/create/patch — no delete — ClusterRoles with
      escalate/bind, ClusterRoleBindings, PriorityClasses, and the five backend Namespaces by name)
      is bound once, to the controller's ServiceAccount alone;
@@ -154,12 +185,26 @@ upgraded them with SCP, and nothing reported their health to SCP.
    - **Its doors**: `GET /instance/operators/self` (does my session hold it — what the page asks),
      `GET /instance/operators`, `POST /instance/operators` (201; 409 on a live grant) and
      `DELETE /instance/operators/{grantId}` (stamps `revoked_at`; the history stays). Granting and
-     revoking need instance authority themselves — a role holder can grant another user. **The
-     first grant** needs a full operator credential (`scp instance-operator grant --org --user
-     --operator-token …`) or the M29.1 installer's seam: `instanceOperator.grantBootstrapAdmin`
-     (env `SCP_BOOTSTRAP_INSTANCE_OPERATOR=1`) makes scpd grant it to the bootstrap admin once,
-     while no live grant exists, audited as `install` — no SQL typed by hand either way. **M29.1
-     sets that value**; this increment ships it off.
+     revoking need instance authority themselves: **an operator may grant and revoke the role for
+     other users** (owner decision 2026-09-25), with two safeguards — every change is audited, and
+     **the last live grant cannot be revoked** (409; the check and the revoke are serialised by an
+     advisory lock, so two concurrent revokes of the last two grants cannot both succeed). The
+     instance must not be lockable by its own operators.
+   - **The first grant** needs a full operator credential (`scp instance-operator grant --org
+     --user --operator-token …`) or the M29.1 installer's seam: `instanceOperator.grantBootstrapAdmin`
+     (env `SCP_BOOTSTRAP_INSTANCE_OPERATOR=1`) makes scpd grant it to the bootstrap admin, audited
+     as `install` — no SQL typed by hand either way. **The seam is ONE-SHOT**: it fires only on a
+     deployment that has never had a grant and on which it has never fired (its `install` audit
+     link is the durable record — `scp_operator` cannot delete it). It never re-grants after a
+     later change, however zero live grants was reached. **M29.1 sets that value**; this increment
+     ships it off.
+   - **Recovery when every operator is gone** (the API refuses the last revoke, so this means rows
+     changed out of band, or every operator's account lost): a **full operator credential** grants
+     the role again — the chart's `appSecrets` operator token (`SCP_OPERATOR_TOKEN`, when the
+     operator API is enabled) or a credential minted with `scp operator-credential create` while
+     one still exists; failing both, the deployment's owner mints one with the admin database
+     connection, the same authority that installs the chart. The stack controller's own credential
+     is deliberately NOT a recovery path: it opens only the spec and status doors.
    - **Every instance-level stack write is audited** (principle 6): enable, disable, size, purge,
      settings, upgrade request, the diagnostics read, and every grant and revoke append to
      `instance_audit_events` IN THE SAME TRANSACTION as the change — hash-chained (sha256 over the
@@ -168,6 +213,12 @@ upgraded them with SCP, and nothing reported their health to SCP.
      org, or the credential id) and the before/after. `GET /instance/audit-events` (and
      `scp instance-operator audit`) re-verifies the chain on every read and names the first broken
      link.
+   - **What the chain does not prove** (recorded, not built): the hash is UNKEYED, so anyone
+     holding the `scp_operator` database password could append a well-formed forged link, and the
+     table's owner (the migration/admin role) could truncate the tail without breaking what
+     remains. It detects edits by the request-serving role and by accident; it is not a signature.
+     Closing it means a keyed MAC or signing with a key scpd holds, plus an external anchor for the
+     head — the same design the per-org chain would want.
 
 8. **IaC parity: not applicable, deliberately.** A coordination-as-code program is an ORG's estate,
    applied with that org's authority. The stack is instance-tier; putting it in an org's program

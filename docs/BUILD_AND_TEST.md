@@ -2244,6 +2244,10 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
         controller's credential is `scope='stack-controller'`, and only it writes status. N2: rotation revokes by the
         recorded credential id. N3: egress to the API server's endpoints and scpd's api pods only. Drills: scp-runner-ops
         built and scp-builder-rpm stood in, both passed (`drill-images.test.ts` censuses every daemon-sourced image).
+        Re-verify round: the last live grant cannot be revoked (409, serialised); the bootstrap seam is one-shot; the
+        recovery path is in ADR-0058 §7. The bundled Argo Workflows and Argo Events run namespace-scoped (their
+        upstream ClusterRoleBindings rendered as RoleBindings), and helm-verify holds every backend identity that still
+        reaches the controller's namespace to a justified exception list (Argo CD's three, Argo Rollouts).
   - **M29.5 — credentials through SCP (D2).** A write-only passthrough, from the API to the controller to the backend's
     Secret; `scpd` persists nothing and cannot read it back. The audit records the key, never the value. Workload identity
     is preferred where available.
