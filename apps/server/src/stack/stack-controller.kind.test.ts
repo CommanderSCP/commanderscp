@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -35,6 +35,9 @@ import { provisionInstallTimePrincipals } from "../db/provision-install.js";
  *   - enabling a backend THROUGH THE API ALONE installs it, and its status reaches `ready`;
  *   - disabling it removes it;
  *   - a release whose image never becomes ready falls back to the last good set;
+ *   - its state lives in its OWN namespace, and scpd holds the digests of it;
+ *   - the runner's identity — which may create Jobs where it runs — can neither run a pod as the
+ *     controller nor read its credential or state (review B1: the takeover Job is refused);
  *   - and every Kubernetes call it made was one the chart's RBAC permits.
  *
  * Argo Events is the backend: three CRDs, cluster RBAC and a Deployment — every step the controller
@@ -59,10 +62,15 @@ const OPERATOR_TOKEN = "m29-4-kind-operator-token";
 interface Harness {
   apiBase: string;
   caFile: string;
+  /** The runner namespace and the runner ServiceAccount's token (the chart's runner Role). */
+  namespace: string;
+  token: string;
   stackdNamespace: string;
   stackdToken: string;
   stackRegistry: string;
 }
+
+const STACKD_SA = "scp-commanderscp-stackd";
 
 const EVENTS_NS = "scp-argo-events";
 
@@ -113,7 +121,8 @@ describe("M29.4 the stack controller installs, removes and falls back on a real 
       {
         apiUrl: server.baseUrl,
         operatorCredential: credential,
-        scpNamespace: harness.stackdNamespace,
+        scpNamespace: "scp-release-harness",
+        stackdNamespace: harness.stackdNamespace,
         release: opts.release,
         chartDir: path.join(REPO, "deploy/helm-bundled"),
         helmPinFile: path.join(REPO, "tools/helm/pin.env"),
@@ -179,12 +188,16 @@ describe("M29.4 the stack controller installs, removes and falls back on a real 
     });
     const org = await createTestOrg(server, "m29-4-kind");
     tenant = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    // What the migrations Job does on a Helm install: record the controller's credential.
-    credential = `scp_op_${randomBytes(16).toString("hex")}.${randomBytes(32).toString("hex")}`;
+    // What the migrations Job does on a Helm install: record the controller's credential from the
+    // id and sha256 the chart hands it — the Job never holds the credential itself.
+    const tokenId = randomBytes(16).toString("hex");
+    const secret = randomBytes(32).toString("hex");
+    credential = `scp_op_${tokenId}.${secret}`;
     const admin = new pg.Pool({ connectionString: testDatabaseUrl(), max: 1 });
     try {
       await provisionInstallTimePrincipals(admin, server.deps.config, {
-        SCP_STACKD_OPERATOR_CREDENTIAL: credential
+        SCP_STACKD_CREDENTIAL_TOKEN_ID: tokenId,
+        SCP_STACKD_CREDENTIAL_SHA256: createHash("sha256").update(secret).digest("hex")
       });
     } finally {
       await admin.end();
@@ -237,6 +250,78 @@ describe("M29.4 the stack controller installs, removes and falls back on a real 
         .managedFields ?? []
     ).map((f) => `${f.manager}:${f.operation}`);
     expect(managers).toContain("scp-stackd:Apply");
+
+    // Its memory is in ITS namespace, and scpd holds the digests of it (review S1).
+    const state = await kube.get({
+      apiVersion: "v1",
+      kind: "Secret",
+      name: "scp-stackd-argo-events-state",
+      namespace: harness.stackdNamespace
+    });
+    expect(state).not.toBeNull();
+    const spec = await tenant.stack.spec(OPERATOR_TOKEN);
+    const integrity = spec.integrity.find((i) => i.backend === "argo-events")!;
+    expect(integrity.lastGoodSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(integrity.inventorySha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("B1: the runner's identity cannot run a pod as the controller, nor read its secrets", async () => {
+    const ca = await readFile(harness.caFile);
+    const runner = httpsTransport({
+      apiBase: harness.apiBase,
+      ca,
+      readToken: async () => harness.token
+    });
+    const can = async (namespace: string, group: string, resource: string, verb: string) => {
+      const res = await runner.request({
+        method: "POST",
+        path: "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+        contentType: "application/json",
+        body: JSON.stringify({
+          apiVersion: "authorization.k8s.io/v1",
+          kind: "SelfSubjectAccessReview",
+          spec: { resourceAttributes: { namespace, group, resource, verb } }
+        })
+      });
+      expect(res.status, res.body).toBe(201);
+      return (JSON.parse(res.body) as { status: { allowed: boolean } }).status.allowed;
+    };
+    // Known-positive control: where the runner runs, it CAN create Jobs — the very right that,
+    // in the controller's namespace, would be a takeover.
+    expect(await can(harness.namespace, "batch", "jobs", "create")).toBe(true);
+    for (const [group, resource, verb] of [
+      ["batch", "jobs", "create"],
+      ["", "pods", "create"],
+      ["apps", "deployments", "create"],
+      ["", "secrets", "get"],
+      ["", "secrets", "list"],
+      ["", "serviceaccounts/token", "create"]
+    ] as const) {
+      expect(await can(harness.stackdNamespace, group, resource, verb), `${verb} ${resource}`).toBe(
+        false
+      );
+    }
+    // And the takeover itself, as the review wrote it: a Job running as the controller.
+    const takeover = await runner.request({
+      method: "POST",
+      path: `/apis/batch/v1/namespaces/${harness.stackdNamespace}/jobs`,
+      contentType: "application/json",
+      body: JSON.stringify({
+        apiVersion: "batch/v1",
+        kind: "Job",
+        metadata: { name: "takeover" },
+        spec: {
+          template: {
+            spec: {
+              serviceAccountName: STACKD_SA,
+              restartPolicy: "Never",
+              containers: [{ name: "t", image: "busybox", command: ["true"] }]
+            }
+          }
+        }
+      })
+    });
+    expect(takeover.status, takeover.body).toBe(403);
   });
 
   it("disabling it through the API removes it (the CRDs, like helm's, are kept)", async () => {
@@ -253,14 +338,25 @@ describe("M29.4 the stack controller installs, removes and falls back on a real 
         name: "argo-events-role"
       })
     ).toBeNull();
+    // Nothing left to fall back to; the state records nothing installed.
     expect(
       await kube.get({
         apiVersion: "v1",
         kind: "Secret",
-        name: "scp-stackd-state",
-        namespace: EVENTS_NS
+        name: "scp-stackd-argo-events-lastgood-0",
+        namespace: harness.stackdNamespace
       })
     ).toBeNull();
+    const state = await kube.get({
+      apiVersion: "v1",
+      kind: "Secret",
+      name: "scp-stackd-argo-events-state",
+      namespace: harness.stackdNamespace
+    });
+    const recorded = JSON.parse(
+      Buffer.from((state!["data"] as Record<string, string>)["state.json"]!, "base64").toString()
+    ) as { inventory: unknown[]; lastGood: unknown };
+    expect(recorded).toMatchObject({ inventory: [], lastGood: null });
     expect(
       await kube.get({
         apiVersion: "apiextensions.k8s.io/v1",

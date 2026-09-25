@@ -92,6 +92,9 @@ REGISTRY_IMAGE="${SCP_KIND_REGISTRY_IMAGE:-registry:2}"
 STACK_IMAGES="${SCP_KIND_STACK_IMAGES:-quay.io/argoproj/argo-events:v1.9.10=argoproj/argo-events:v1.9.10}"
 STACKD_NAMESPACE="${SCP_KIND_STACKD_NAMESPACE:-scp-stackd-harness}"
 STACKD_RELEASE="scp"
+# The controller's RELEASE namespace — where scpd would run. Distinct from STACKD_NAMESPACE, as the
+# chart requires (review B1): the controller lives in a namespace of its own.
+STACKD_RELEASE_NAMESPACE="${SCP_KIND_STACKD_RELEASE_NAMESPACE:-scp-release-harness}"
 
 log() { printf '\n[kind-runner-harness] %s\n' "$*" >&2; }
 
@@ -134,11 +137,16 @@ stack_up() {
     log "pushed ${src} as ${STACK_REGISTRY_NAME}:5000/${pair#*=}"
   done
 
-  log "applying THE CHART'S OWN stack controller RBAC (templates/stackd-rbac.yaml) in ${STACKD_NAMESPACE}"
+  # The template creates the controller's own namespace (a hook in a real install) along with its
+  # ServiceAccount, its state Role and every binding — nothing here is hand-written.
+  # (`helm template` prints hooks last, so the Namespace is created first here — `apply` then only
+  # adopts it; a real install orders it by hook weight.)
+  log "applying THE CHART'S OWN stack controller RBAC (templates/stackd-rbac.yaml) into ${STACKD_NAMESPACE}"
   kubectl create namespace "$STACKD_NAMESPACE"
   helm template "$STACKD_RELEASE" "${REPO_ROOT}/deploy/helm" \
-    --namespace "$STACKD_NAMESPACE" \
+    --namespace "$STACKD_RELEASE_NAMESPACE" \
     --set stackd.enabled=true \
+    --set stackd.namespace="$STACKD_NAMESPACE" \
     --show-only templates/stackd-rbac.yaml \
     | kubectl apply -f -
 }

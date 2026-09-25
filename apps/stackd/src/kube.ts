@@ -13,7 +13,8 @@ import type { KubeObject, ObjectRef } from "./manifests.js";
 export const FIELD_MANAGER = "scp-stackd";
 
 export interface KubeRequest {
-  method: "GET" | "PATCH" | "DELETE";
+  /** POST: only the kind suite's access reviews; the controller itself never creates by POST. */
+  method: "GET" | "PATCH" | "DELETE" | "POST";
   path: string;
   body?: string;
   contentType?: string;
