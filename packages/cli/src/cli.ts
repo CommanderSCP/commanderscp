@@ -131,6 +131,7 @@ import {
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, resolveLoginBaseUrl } from "./client-factory.js";
 import { registerInstanceOperatorCommands, registerStackCommands } from "./stack-cli.js";
+import { registerInstallCommand } from "./install-cli.js";
 import { readServiceExportSpec } from "./estate-reader.js";
 import { discoveryRequestForExecutionSystem, groupDiscoveryProposal } from "./scaffold-reader.js";
 import { promptLine } from "./prompt.js";
@@ -7616,6 +7617,9 @@ export function buildProgram(): Command {
   // M29.4 — the Standard Stack (ADR-0058).
   registerStackCommands(program);
   registerInstanceOperatorCommands(program);
+
+  // M29.1 — the front door (docs/adr/0059-front-door.md).
+  registerInstallCommand(program);
 
   return program;
 }

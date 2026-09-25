@@ -87,7 +87,11 @@ async function main(): Promise<void> {
   const bootstrap = createsBootstrapAdmin(config)
     ? await ensureBootstrapAdmin(
         db,
-        { orgName: config.bootstrapOrgName, adminUsername: config.bootstrapAdminUsername },
+        {
+          orgName: config.bootstrapOrgName,
+          adminUsername: config.bootstrapAdminUsername,
+          password: config.bootstrapAdminPassword
+        },
         { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) }
       )
     : null;

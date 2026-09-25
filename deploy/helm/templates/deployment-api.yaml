@@ -71,6 +71,16 @@ spec:
               value: {{ include "commanderscp.apiRole" . | quote }}
             {{- include "commanderscp.commonEnv" . | nindent 12 }}
             {{- include "commanderscp.runtimeDbEnv" . | nindent 12 }}
+            {{- /* M29.1 (the front door): ONLY the api pod gets this — it's the one that can create
+                   the bootstrap admin (background-work.ts's createsBootstrapAdmin). Not in
+                   commonEnv: the worker Deployment and the migrations Job never need it, and a
+                   plaintext one-time password is worth keeping off every pod template that doesn't.
+                   See secrets-generated.yaml for the Secret and docs/adr/0059-front-door.md. */}}
+            - name: SCP_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ printf "%s-bootstrap-admin" (include "commanderscp.fullname" .) }}
+                  key: password
           # PRE-STOP DELAY — the difference between "graceful shutdown" and "zero downtime".
           #
           # main.ts already handles SIGTERM with `app.close()`, which drains in-flight requests. That

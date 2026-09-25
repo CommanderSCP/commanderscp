@@ -36,7 +36,19 @@ export interface BootstrapResult {
 
 export async function ensureBootstrapAdmin(
   db: Db,
-  opts: { orgName: string; adminUsername: string },
+  opts: {
+    orgName: string;
+    adminUsername: string;
+    /**
+     * M29.1 (the front door): the chart pre-generates this into a Secret the INSTALLER reads and
+     * prints in its own terminal — `kubectl get secret <release>-bootstrap-admin` never has to be
+     * run by a human, and it never has to come from a pod log. When set, this call consumes it
+     * instead of generating one, and never echoes it to `log` (the installer already has it; a
+     * second copy in the pod log would defeat the point of moving it out of the log). Omitted:
+     * unchanged dev/compose behaviour — a fresh random password, logged once at `warn`.
+     */
+    password?: string;
+  },
   log: { info: (msg: string) => void; warn: (msg: string) => void }
 ): Promise<BootstrapResult> {
   const existingOrg = await db.query.orgs.findFirst({ where: eq(orgs.name, opts.orgName) });
@@ -82,7 +94,8 @@ export async function ensureBootstrapAdmin(
     return created.id;
   });
 
-  const oneTimePassword = randomBytes(18).toString("base64url");
+  const wasGenerated = opts.password === undefined;
+  const oneTimePassword = opts.password ?? randomBytes(18).toString("base64url");
   const passwordHash = await argon2.hash(oneTimePassword);
   await db.insert(users).values({
     id: uuidv7(),
@@ -92,12 +105,28 @@ export async function ensureBootstrapAdmin(
     objectId: userObjectId
   });
 
-  log.warn(
-    `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}'. ` +
-      `One-time password (not stored, shown once): ${oneTimePassword}`
-  );
+  if (wasGenerated) {
+    log.warn(
+      `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}'. ` +
+        `One-time password (not stored, shown once): ${oneTimePassword}`
+    );
+  } else {
+    // M29.1: the plaintext already has exactly one reader outside this process — the installer,
+    // which read the same chart-generated Secret this password came from and prints it in its own
+    // terminal. Logging it here too would make the pod log a second, uncontrolled copy of the
+    // credential the whole design exists to keep to one reader (docs/adr/0059-front-door.md).
+    log.warn(
+      `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}' from ` +
+        `a pre-generated credential (SCP_BOOTSTRAP_ADMIN_PASSWORD) — not logged; see the ` +
+        `installer's output.`
+    );
+  }
 
-  return { orgId: org.id, oneTimePassword };
+  // `oneTimePassword` is returned to the caller ONLY when this call itself generated it — a
+  // caller that supplied one already holds it, and BootstrapResult existing to hand back a
+  // never-otherwise-recorded secret is exactly the property M29.1 moves out of the log path, not
+  // something to reopen by returning it here too.
+  return { orgId: org.id, oneTimePassword: wasGenerated ? oneTimePassword : null };
 }
 
 async function createOrg(db: Db, name: string) {
