@@ -3,12 +3,13 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
   AuthConfigSchema,
+  ChangePasswordRequestSchema,
   CurrentUserSchema,
   LoginRequestSchema,
   LoginResponseSchema,
   ProblemSchema
 } from "@scp/schemas";
-import { invalidateSessionByToken, login } from "../auth/local-auth.js";
+import { changeLocalPassword, invalidateSessionByToken, login } from "../auth/local-auth.js";
 import { extractToken, requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { bindingsAnywhereFor } from "../authz/resolve.js";
@@ -110,9 +111,45 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
         // mount the commander site or the smaller outpost site. Read from config, never from
         // federation_self: one deterministic answer per instance.
         instanceRole: deps.config.federationRole,
+        mustChangePassword: auth.mustChangePassword,
         roleBindings: identity.roleBindings,
         permissionsAnywhere: identity.permissionsAnywhere
       });
+    }
+  });
+
+  typed.route({
+    method: "POST",
+    url: "/api/v1/auth/password",
+    schema: {
+      body: ChangePasswordRequestSchema,
+      response: { 204: z.undefined(), 400: ProblemSchema, 401: ProblemSchema, 403: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "changePassword",
+        summary:
+          "Change the calling local-auth user's own password — the only door that clears mustChangePassword",
+        tags: ["auth"]
+      }
+    },
+    handler: async (request, reply) => {
+      // requireAuth's own gate (require-auth.ts) explicitly allows THIS route through while
+      // mustChangePassword is set — it is the one door that has to stay reachable to clear it.
+      const auth = await requireAuth(deps, request);
+      const result = await changeLocalPassword(
+        deps.db,
+        auth.userId,
+        request.body.currentPassword,
+        request.body.newPassword
+      );
+      if (result === "no-local-password") {
+        throw unauthorized("this account has no local password to change (OIDC-provisioned)");
+      }
+      if (result === "wrong-current-password") {
+        throw unauthorized("current password is incorrect");
+      }
+      reply.status(204).send(undefined);
     }
   });
 

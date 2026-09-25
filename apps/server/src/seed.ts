@@ -122,6 +122,17 @@ export async function loginAndSeedDemoData(
   }
   const client = new ScpClient({ baseUrl: config.internalBaseUrl });
   await client.login(config.bootstrapAdminUsername, bootstrap.oneTimePassword);
+  // #422 review fix — ensureBootstrapAdmin now sets mustChangePassword: true, which blocks every
+  // route but /auth/{me,logout,password} (require-auth.ts) until it is cleared. The demo-seed path
+  // needs the REST of the API (services.create, components.create, …) to seed anything at all, and
+  // it must NOT invalidate the one-time password the operator was actually shown — main.ts's own
+  // log line and this same value are the operator's real first-login credential for the eval
+  // stack. Submitting the SAME password as both "current" and "new" clears the forced-change flag
+  // without changing what the password IS: seeding can proceed, and the operator's printed
+  // password still logs in afterward. (SCP_SEED_DEMO is eval/demo-stack-only — docker-compose.yml
+  // — never set on a `scp install --mode kube` deployment, where the forced-change flow this
+  // reasoning routes around stays fully intact.)
+  await client.auth.changePassword(bootstrap.oneTimePassword, bootstrap.oneTimePassword);
   await seedDemoData(client, config.bootstrapOrgName, log);
 }
 

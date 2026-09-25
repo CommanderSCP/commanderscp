@@ -46,7 +46,14 @@ export const users = pgTable(
     objectId: uuid("object_id"),
     /** OIDC `sub` claim this account was JIT-provisioned from (auth/oidc.ts) — NULL for local-auth-only users. */
     oidcSubject: text("oidc_subject"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** M29.1 review fix (#422 SHOULD-FIX 3/4): a local-auth password that must be changed before
+     *  any other door opens — set true for the bootstrap admin (ensureBootstrapAdmin), so a
+     *  shared/printed one-time password stops working the moment it has been used to sign in
+     *  once, instead of remaining a permanently valid credential. Checked in require-auth.ts,
+     *  cleared by POST /auth/password (`changeLocalPassword`). Irrelevant for OIDC-only accounts
+     *  (passwordHash NULL — those never authenticate with a password at all). */
+    mustChangePassword: boolean("must_change_password").notNull().default(false)
   },
   (table) => [
     unique("users_org_id_username_key").on(table.orgId, table.username),

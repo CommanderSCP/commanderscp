@@ -17,6 +17,10 @@ export interface AuthContext {
   username: string;
   /** The graph `user` object this account maps to — the RBAC subject (DESIGN.md §7). */
   subjectObjectId: string;
+  /** #422 review fix — true for a local-auth account whose password must be changed before any
+   *  other door opens (checked in require-auth.ts). Always false for an OIDC-only account
+   *  (passwordHash NULL) — see `changeLocalPassword`'s doc for why. */
+  mustChangePassword: boolean;
 }
 
 function hashToken(token: string): string {
@@ -102,7 +106,12 @@ export async function ensureBootstrapAdmin(
     orgId: org.id,
     username: opts.adminUsername,
     passwordHash,
-    objectId: userObjectId
+    objectId: userObjectId,
+    // #422 review fix (SHOULD-FIX 3): a printed/handed-in one-time password is a SHARED secret the
+    // moment it exists (the installer's terminal, an operator's eyes, a chart Secret an operator
+    // could still read) — "shown once" is a claim about where it starts, not about how long it
+    // keeps working. Forcing a change on first login is what actually retires it.
+    mustChangePassword: true
   });
 
   if (wasGenerated) {
@@ -211,6 +220,36 @@ export async function login(
   return { token: session.token, expiresAt: session.expiresAt, orgName: org.name };
 }
 
+export type ChangePasswordResult = "changed" | "wrong-current-password" | "no-local-password";
+
+/**
+ * `POST /auth/password` (#422 review fix — SHOULD-FIX 3). The ONLY door that clears
+ * `mustChangePassword`, so it is also the door that actually retires a printed/handed-in one-time
+ * password rather than leaving it valid forever (require-auth.ts's gate is what makes changing it
+ * MANDATORY before anything else, not merely possible).
+ */
+export async function changeLocalPassword(
+  db: Db,
+  userId: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<ChangePasswordResult> {
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  // OIDC-only accounts (no local passwordHash) have nothing here to change — same "treat like a
+  // wrong password, not a different code path" posture `login()` already uses for the sibling case.
+  if (!user?.passwordHash) return "no-local-password";
+
+  const valid = await verifyPasswordHashLimited(user.passwordHash, currentPassword);
+  if (!valid) return "wrong-current-password";
+
+  const passwordHash = await argon2.hash(newPassword);
+  await db
+    .update(users)
+    .set({ passwordHash, mustChangePassword: false })
+    .where(eq(users.id, userId));
+  return "changed";
+}
+
 /** Resolves a `users.id` to its full auth context. See docs/auth.md §15. */
 export async function resolveAuthContext(db: Db, userId: string): Promise<AuthContext | null> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -223,7 +262,8 @@ export async function resolveAuthContext(db: Db, userId: string): Promise<AuthCo
     orgId: org.id,
     orgName: org.name,
     username: user.username,
-    subjectObjectId: user.objectId
+    subjectObjectId: user.objectId,
+    mustChangePassword: user.mustChangePassword
   };
 }
 

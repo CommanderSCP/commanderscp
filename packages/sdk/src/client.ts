@@ -7,6 +7,8 @@ import {
   getCurrentUser as getCurrentUserRequest,
   logout as logoutRequest,
   getAuthConfig as getAuthConfigRequest,
+  // #422 review fix — the only door that clears CurrentUser.mustChangePassword.
+  changePassword as changePasswordRequest,
   listServiceObjects as listServiceObjectsRequest,
   createServiceObject as createServiceObjectRequest,
   listServiceObjectsForOrg as listServiceObjectsForOrgRequest,
@@ -788,6 +790,19 @@ export class ScpClient {
     config: async (): Promise<AuthConfig> => {
       const result = await getAuthConfigRequest({ client: this.client });
       return unwrap(result) as AuthConfig;
+    },
+    /** `POST /auth/password` (#422 review fix) — the ONLY door that clears
+     * `CurrentUser.mustChangePassword`. Reachable even while it is set (require-auth.ts's gate
+     * names this route explicitly) — every OTHER call 403s until this succeeds (the detail starts
+     * with `require-auth.ts`'s `PASSWORD_CHANGE_REQUIRED_DETAIL_PREFIX`; prefer
+     * `auth.me().mustChangePassword` to detect this programmatically — a Problem EXTENSION field
+     * would not survive most routes' strict response schemas). `scp passwd` is the CLI door. */
+    changePassword: async (currentPassword: string, newPassword: string): Promise<void> => {
+      const result = await changePasswordRequest({
+        client: this.client,
+        body: { currentPassword, newPassword }
+      });
+      unwrapVoid(result);
     }
   };
 
