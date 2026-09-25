@@ -664,6 +664,9 @@ importers:
 
   packages/plugins/managed-dep:
     dependencies:
+      '@scp/cosign':
+        specifier: workspace:*
+        version: link:../../cosign
       '@scp/dependency-manifests':
         specifier: workspace:*
         version: link:../../dependency-manifests

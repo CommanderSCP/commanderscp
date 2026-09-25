@@ -19,11 +19,14 @@ export interface BundleImageSpec {
   doc: string;
 }
 
-/** The three ephemeral runner images the exception is built in. See docs/airgap.md §17. */
+/** The ephemeral runner images the exception is built in. See docs/airgap.md §17.
+ *  `scp-runner-dep-vendor` (M29.8a, ADR-0059) is the newest: the credential-free, `--network none`
+ *  SANDBOX the `re-vendor` strategy launches — a SEPARATE image from `scp-runner-dep` itself. */
 export const RUNNER_IMAGE_NAMES = [
   "scp-runner-iac",
   "scp-runner-scan",
   "scp-runner-dep",
+  "scp-runner-dep-vendor",
   "scp-runner-ops"
 ] as const;
 
@@ -67,6 +70,14 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     defaultSource: "docker-daemon",
     flagDescription: "scp-runner-dep image reference to bundle",
     doc: "the isolated managed-dep manifest editor image (env: SCP_MANAGED_DEP_RUNNER_IMAGE)"
+  },
+  {
+    name: "scp-runner-dep-vendor",
+    optionStem: "runner-dep-vendor",
+    defaultRef: "scp-runner-dep-vendor:dev",
+    defaultSource: "docker-daemon",
+    flagDescription: "scp-runner-dep-vendor image reference to bundle",
+    doc: "the credential-free re-vendor sandbox image (env: SCP_MANAGED_DEP_REVENDOR_RUNNER_IMAGE)"
   },
   {
     name: "scp-runner-ops",

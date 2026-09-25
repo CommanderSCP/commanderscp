@@ -2249,12 +2249,28 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
 
       The `re-vendor` bump strategy is wired into the real `scp-managed-dep` executor
       (`packages/plugins/managed-dep`) as a third `TriggerIntent` action, exercised end to end against a fixture
-      upstream and a fake GitHub Git Data API (`packages/plugins/managed-dep/src/revendor.test.ts`) — one commit,
-      every file `planVendorRefresh` proposes, one pull request, zero containers launched. ADR-0059 records the
-      charter-consistent design this needed: the runner's unqualified `--network none` clause is untouched because
-      the `re-vendor` strategy never launches `scp-runner-dep` at all — the whole computation (network fetch, skopeo,
-      `helm template`) runs in the orchestrator, extending the SAME orchestrator/runner split the charter's
-      2026-08-15 qualification already states, not a new exception to it.
+      upstream, a fake GitHub Git Data API, and the REAL `runSandbox` pipeline via a fake launcher
+      (`packages/plugins/managed-dep/src/revendor.test.ts`) — one commit, one pull request.
+
+      **REVISED 2026-09-25, same day, per an adversarial review of the first version (`#420`) and a direct owner
+      decision responding to it: "Split + small amendment."** The first version ran the WHOLE computation (network
+      fetch, skopeo, `helm template`) in the orchestrator process — the same process that holds the per-run
+      repository-write credential — which is exactly the "untrusted bytes meet the write credential" shape the
+      charter's `scp-managed-scan`/`scp-managed-dep` splits exist to prevent for every OTHER managed class, and the
+      review found it. **ADR-0059 was rewritten to match what actually shipped, not what a first draft assumed
+      before review:** the orchestrator (fetch by commit sha where possible, digest resolution, cosign verification
+      where a mechanism is confirmed, downgrade refusal, a fixed-vendored-path containment check, and a
+      server-configured `scpRepo` target-repository pin) is now split from a NEW, credential-free, `--network none`
+      sandbox image (`apps/runner-dep-vendor`) that does 100% of the parsing/splitting/`helm template`/rewriting/
+      classification and holds no credential of any kind. A semantic diff classifier
+      (`tools/vendor-refresh/src/classify.ts`) runs inside that sandbox and forces `pull_request` delivery — never
+      `auto_merge`, regardless of what was requested — the moment a proposed change reaches outside a tracked
+      image's own tag/digest (an injected `ClusterRoleBinding` or admission webhook alongside a real version bump
+      is the permanent probe this classifier is mutation-proved against). **Honestly incomplete, and named as
+      such rather than hidden:** cosign verification is wired and enforced for Argo CD only (the one backend with
+      a confirmed keyless per-image signature); Argo Workflows, Argo Rollouts, Argo Events and Gitea are pinned
+      WITHOUT a signature check, logged loudly per run. See ADR-0059 for the full design, what the FIRST version of
+      that ADR got wrong about its own claims, and the complete list of what remains open.
 
       **What is NOT built, and is an explicit, reported scope boundary rather than a silent gap:** a
       per-dependency-line STORED strategy selector and the DISPATCHER-side logic that would read it and automatically

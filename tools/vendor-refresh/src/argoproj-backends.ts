@@ -124,6 +124,33 @@ export function isValidUpstreamTag(tag: string): boolean {
   return UPSTREAM_TAG_PATTERN.test(tag);
 }
 
+/** A git commit sha, exactly — 40 lowercase hex characters. Guards the SAME class of hazard
+ *  {@link isValidUpstreamTag} guards for a tag: an unvalidated string interpolated into a fetch URL
+ *  path segment. */
+const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
+
+export function isValidCommitSha(sha: string): boolean {
+  return COMMIT_SHA_PATTERN.test(sha);
+}
+
+/** Fetch a `raw-tree` backend's manifest BY COMMIT SHA rather than by tag (ADR-0059, finding 1) —
+ *  content-addressed against the exact tree GitHub's `/commits/{tag}` resolved, immune to a tag
+ *  being force-moved after the orchestrator resolved it. ONLY valid for `urlKind: "raw-tree"`: a
+ *  `release-asset` is a GitHub Release upload, not a tree entry, and has no sha-addressed form —
+ *  see `revendor-orchestrator.ts` for how that class is fetched (by tag, the one upstream-published
+ *  address it has) and ADR-0059 for why that gap is accepted rather than papered over. */
+export function argoprojManifestUrlBySha(spec: ArgoprojBackendSpec, sha: string): string {
+  if (spec.urlKind !== "raw-tree") {
+    throw new Error(
+      `vendor-refresh: '${spec.upstreamRepo}' is urlKind '${spec.urlKind}', which has no commit-sha-addressed form — only 'raw-tree' backends can be fetched by sha`
+    );
+  }
+  if (!isValidCommitSha(sha)) {
+    throw new Error(`vendor-refresh: '${sha}' is not a well-formed 40-hex-character commit sha`);
+  }
+  return `https://raw.githubusercontent.com/${spec.upstreamRepo}/${sha}/${spec.manifestPath}`;
+}
+
 export function argoprojManifestUrl(spec: ArgoprojBackendSpec, tag: string): string {
   if (!isValidUpstreamTag(tag)) {
     throw new Error(

@@ -18,12 +18,18 @@ export {
 export {
   ARGOPROJ_BACKENDS,
   argoprojManifestUrl,
+  argoprojManifestUrlBySha,
   isValidUpstreamTag,
-  type ArgoprojBackendSpec
+  isValidCommitSha,
+  type ArgoprojBackendSpec,
+  type ArgoprojUrlKind,
+  type TrackedImageSpec
 } from "./argoproj-backends.js";
 export { planArgoprojBackend } from "./argoproj-plan.js";
 export {
   GITEA_CHART_REF,
+  GITEA_CHART_REPO_NAME,
+  GITEA_CHART_REPO_URL,
   GITEA_BUNDLE_IMAGE_NAME,
   GITEA_IMAGE_COORDINATE,
   giteaHelmTemplateArgs
@@ -41,3 +47,5 @@ export { createSkopeoDigestResolver, SkopeoUnavailableError } from "./digest.js"
 export { realVendorRefreshIO } from "./io.js";
 export { splitAtDocumentBoundaries, splitIntoNamedParts, MAX_PART_BYTES } from "./split.js";
 export { classifyRevendorDiff, type DiffClass, type DiffClassification } from "./classify.js";
+export { buildSandboxIO, type SandboxInput } from "./sandbox-io.js";
+export { runSandbox, type FullSandboxInput, type SandboxOutput } from "./sandbox-main.js";

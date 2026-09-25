@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ARGOPROJ_BACKENDS, argoprojManifestUrl, isValidUpstreamTag } from "./argoproj-backends.js";
+import {
+  ARGOPROJ_BACKENDS,
+  argoprojManifestUrl,
+  argoprojManifestUrlBySha,
+  isValidCommitSha,
+  isValidUpstreamTag
+} from "./argoproj-backends.js";
 
 /**
  * REGRESSION, measured against the real network 2026-09-25 (see the PR body for the full smoke
@@ -58,6 +64,28 @@ describe("argoprojManifestUrl", () => {
     }
     for (const bad of ["", "latest", "v3.4", "v3.4.5 ", " v3.4.5", "v3.4.5/../x", "v3.4.5\n"]) {
       expect(isValidUpstreamTag(bad), JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it("argoprojManifestUrlBySha fetches raw-tree backends by commit sha (ADR-0059 finding 1)", () => {
+    const sha = "a".repeat(40);
+    expect(argoprojManifestUrlBySha(ARGOPROJ_BACKENDS.argocd, sha)).toBe(
+      `https://raw.githubusercontent.com/argoproj/argo-cd/${sha}/manifests/install.yaml`
+    );
+  });
+
+  it("argoprojManifestUrlBySha refuses a release-asset backend — it has no sha-addressed form", () => {
+    expect(() =>
+      argoprojManifestUrlBySha(ARGOPROJ_BACKENDS["argo-workflows"], "a".repeat(40))
+    ).toThrow(/no commit-sha-addressed form/);
+  });
+
+  it("argoprojManifestUrlBySha refuses a malformed sha (same P1 hazard, sha-shaped)", () => {
+    for (const bad of ["", "not-hex", "a".repeat(39), "a".repeat(41), "A".repeat(40), "../../etc/passwd"]) {
+      expect(isValidCommitSha(bad), JSON.stringify(bad)).toBe(false);
+      expect(() => argoprojManifestUrlBySha(ARGOPROJ_BACKENDS.argocd, bad)).toThrow(
+        /not a well-formed 40-hex-character commit sha/
+      );
     }
   });
 

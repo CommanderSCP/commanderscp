@@ -19,6 +19,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "@scp/cosign": "workspace:*",
     "@scp/dependency-manifests": "workspace:*",
     "@scp/git-provider-core": "workspace:*",
     "@scp/plugin-api": "workspace:*",

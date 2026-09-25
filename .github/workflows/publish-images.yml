@@ -83,6 +83,16 @@ jobs:
           docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/runner-dep
           docker push "$IMAGE:sha-${{ github.sha }}"
           docker push "$IMAGE:latest"
+      - name: Build + push scp-runner-dep-vendor (repo-root context — apps/runner-dep-vendor/Dockerfile)
+        # M29.8a, ADR-0059 — the `re-vendor` bump strategy's credential-free, `--network none`
+        # SANDBOX. `SCP_MANAGED_DEP_REVENDOR_RUNNER_IMAGE` unset means `re-vendor` specifically is
+        # off (`bump`/`merge` are unaffected). CONTEXT IS THE REPO ROOT, unlike every sibling runner
+        # above — see the Dockerfile's own header for why.
+        run: |
+          IMAGE="ghcr.io/commanderscp/scp-runner-dep-vendor"
+          docker build -f apps/runner-dep-vendor/Dockerfile -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          docker push "$IMAGE:latest"
       - name: Build + push scp-builder-rpm (apps/builder-rpm)
         # M28.1 — the scp-build-rpm-v1 CATALOG image (not a runner: the org's Argo Workflows runs it).
         # First-party because no maintained public image ships rpmbuild, so a connected install has
@@ -107,6 +117,8 @@ jobs:
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-scan:sha-${{ github.sha }}" || true
             echo "scp-runner-dep: ghcr.io/commanderscp/scp-runner-dep:sha-${{ github.sha }}"
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-dep:sha-${{ github.sha }}" || true
+            echo "scp-runner-dep-vendor: ghcr.io/commanderscp/scp-runner-dep-vendor:sha-${{ github.sha }}"
+            docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-dep-vendor:sha-${{ github.sha }}" || true
             echo "scp-builder-rpm: ghcr.io/commanderscp/scp-builder-rpm:sha-${{ github.sha }}"
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-builder-rpm:sha-${{ github.sha }}" || true
             echo '```'

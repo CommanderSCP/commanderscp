@@ -29,13 +29,12 @@ import {
   // the diagnosis, and dropping it is the defect this plugin's failure `detail` was built out of.
   type RunnerResult
 } from "@scp/runner-launcher";
+import { isBackendName, type BackendName } from "@scp/vendor-refresh";
 import {
-  isBackendName,
-  planVendorRefresh,
-  realVendorRefreshIO,
-  type BackendName,
-  type VendorRefreshIO
-} from "@scp/vendor-refresh";
+  DEFAULT_REVENDOR_FETCH_DEPS,
+  orchestrateRevendor,
+  type RevendorFetchDeps
+} from "./revendor-orchestrator.js";
 import {
   coordinateRuleCandidates,
   isDependencyEcosystem,
@@ -66,6 +65,19 @@ import {
 export interface ManagedDepConfig {
   /** SERVER-INJECTED (never tenant): the vetted, pinned `scp-runner-dep` image reference. */
   runnerImage: string;
+  /** SERVER-INJECTED (never tenant): the vetted, pinned `scp-runner-dep-vendor` SANDBOX image the
+   *  `re-vendor` strategy launches (ADR-0059) — a SEPARATE image from `runnerImage` above: this one
+   *  is credential-free and `--network none` unconditionally, and does the parsing/`helm template`/
+   *  rewriting the orchestrator itself no longer does. Unset means `re-vendor` is not enabled — a
+   *  `bump`/`merge` dispatch is unaffected. */
+  revendorRunnerImage?: string;
+  /** SERVER-INJECTED (never tenant): `owner/repo` — the ONE repository `re-vendor` may ever write
+   *  to (ADR-0059's other containment half: "the target repository is the one CommanderSCP is
+   *  configured to vendor its own stack into, which is never tenant-configurable"). A `re-vendor`
+   *  descriptor whose `repo` does not equal this is refused BEFORE a credential is minted — never
+   *  trusted from the intent alone, which is server-composed but not itself an authority boundary.
+   *  Unset means `re-vendor` is not enabled, same as an unset `revendorRunnerImage`. */
+  scpRepo?: string;
   /** SERVER-INJECTED (never tenant): operator root under which per-run scratch dirs are made. */
   workspaceRoot: string;
   /** ms before the container run is killed as hung (TENANT config). Default 5 minutes — a manifest
@@ -527,6 +539,8 @@ function asConfig(config: unknown): ManagedDepConfig {
   return {
     ...c,
     runnerImage: c.runnerImage,
+    revendorRunnerImage: c.revendorRunnerImage,
+    scpRepo: c.scpRepo,
     workspaceRoot: c.workspaceRoot,
     timeoutMs: c.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     dockerBinary: c.dockerBinary ?? "docker",
@@ -705,20 +719,21 @@ async function triggerMerge(
 }
 
 /**
- * THE `re-vendor` STRATEGY (ADR-0059). Unlike `bump`, this NEVER launches `scp-runner-dep`: the
- * content is composed entirely here, by `planVendorRefresh` — a network fetch of the upstream
- * manifest(s) plus the pinned skopeo's digest resolution, both already the orchestrator's job on
- * every other dependency-automation path (ADR-0032 §7d, commander-only). There is no untrusted
- * runner output to verify here, so there is no manifest-edit proof; what still applies is the SAME
- * containment shape bump's `declaredManifestPaths` gives, checked against the multi-file plan before
- * anything is sent.
+ * THE `re-vendor` STRATEGY (ADR-0059, owner decision 2026-09-25 — "split + small amendment").
+ * Unlike `bump`, this launches a SECOND, credential-free, `--network none` sandbox
+ * (`scp-runner-dep-vendor`) — `orchestrateRevendor` (`revendor-orchestrator.ts`) is the orchestrator
+ * half: it fetches upstream (by commit sha where possible), cosign-verifies what it can, refuses a
+ * downgrade, and launches the sandbox with the verified bytes. The sandbox parses/splits/`helm
+ * template`s/rewrites/classifies and returns files; THIS function still runs the SAME containment
+ * check (`declaredManifestPaths`) that always gated a re-vendor and still does the one commit.
  */
 async function triggerRevendor(
   ctx: PluginContext,
   intent: TriggerIntent,
   writerConfig: ManagedDepConfig,
   externalId: string,
-  vendorRefreshIO: VendorRefreshIO
+  resolveLauncher: ResolveRunnerLauncher,
+  revendorFetchDeps: RevendorFetchDeps
 ): Promise<void> {
   let descriptor: ParsedRevendorDescriptor;
   try {
@@ -727,6 +742,35 @@ async function triggerRevendor(
     recordOutcome(ctx, externalId, {
       succeeded: false,
       detail: err instanceof Error ? err.message : String(err)
+    });
+    return;
+  }
+
+  if (!writerConfig.revendorRunnerImage) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail:
+        "managed-dep: re-vendor is not enabled (revendorRunnerImage is unset) — the split sandbox " +
+        "(ADR-0059) has no vetted image to launch, so this run refuses before a credential is minted"
+    });
+    return;
+  }
+  if (!writerConfig.scpRepo) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail:
+        "managed-dep: re-vendor is not enabled (scpRepo is unset) — there is no configured target " +
+        "repository to bound this strategy to, so this run refuses before a credential is minted"
+    });
+    return;
+  }
+  if (descriptor.repo !== writerConfig.scpRepo) {
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail:
+        `managed-dep: REFUSED (repo_not_scp_repo) — the descriptor names '${descriptor.repo}', but ` +
+        `re-vendor may only ever write to the configured scpRepo ('${writerConfig.scpRepo}'). Nothing ` +
+        "was reached, and no credential was minted."
     });
     return;
   }
@@ -744,39 +788,46 @@ async function triggerRevendor(
 
   try {
     const outcome = await writer.withRunCredential(ctx, descriptor.repo, async (session) => {
-      // planVendorRefresh reads the THREE downstream files (values.yaml, bundle-images.ts,
-      // images.list) from the TARGET REPOSITORY at the base branch — this orchestrator is bumping
-      // CommanderSCP's own repository over the same per-run credential every other write uses, never
-      // off local disk (there is no local checkout of the target repo in this process at all).
-      const readRepoFile = async (path: string): Promise<string> => {
-        const file = await session.readFile(path, descriptor.baseBranch);
-        if (file === undefined) {
-          throw new Error(
-            `managed-dep: '${path}' is not present on '${descriptor.repo}@${descriptor.baseBranch}'`
-          );
-        }
-        return file.content;
-      };
-
-      const plan = await planVendorRefresh(
+      const { plan, classification, fetchNote } = await orchestrateRevendor(
+        ctx,
+        {
+          revendorRunnerImage: writerConfig.revendorRunnerImage!,
+          workspaceRoot: writerConfig.workspaceRoot,
+          timeoutMs: writerConfig.timeoutMs,
+          dockerBinary: writerConfig.dockerBinary,
+          runnerLauncher: writerConfig.runnerLauncher,
+          kubernetes: writerConfig.kubernetes
+        },
         descriptor.backend,
         descriptor.toTag,
-        vendorRefreshIO,
-        readRepoFile
+        descriptor.baseBranch,
+        session,
+        descriptor.declaredManifestPaths,
+        resolveLauncher,
+        revendorFetchDeps
       );
 
-      // THE CONTAINMENT CHECK (ADR-0059): every file the plan proposes must be one this run was
-      // authorised to touch. Refused before a single blob is created.
+      // THE CONTAINMENT CHECK (ADR-0059): every file the sandbox returns must be one this run was
+      // authorised to touch. Refused before a single blob is created. `session.publishVendorRefresh`
+      // re-checks the SAME set at the splice site — this is the first, earlier gate.
       const declared = new Set(descriptor.declaredManifestPaths);
       const undeclared = plan.files.map((f) => f.path).filter((p) => !declared.has(p));
       if (undeclared.length > 0) {
         return {
           succeeded: false,
           detail:
-            `managed-dep: REFUSED (undeclared_paths) — planVendorRefresh proposed path(s) outside ` +
+            `managed-dep: REFUSED (undeclared_paths) — the sandbox proposed path(s) outside ` +
             `declaredManifestPaths: ${undeclared.join(", ")}. Nothing was written to '${descriptor.repo}'.`
         } satisfies PendingOutcome;
       }
+
+      // THE CLASSIFICATION-DRIVEN DELIVERY DOWNGRADE (ADR-0059 finding 1): any change the classifier
+      // could not confine to a tracked image's own tag/digest is delivered as a pull request for a
+      // human to read, REGARDLESS of what delivery the descriptor asked for — the same downgrade
+      // shape the bump path already applies for a split-line anchor edit (see `trigger()`'s
+      // `splitShape` below).
+      const requiresReview = classification.class === "requires-review";
+      const delivery = requiresReview ? "pull_request" : descriptor.delivery;
 
       const commitMessage = `chore(deps): re-vendor ${descriptor.backend} ${descriptor.fromTag} -> ${descriptor.toTag}`;
       const pullRequestBody = [
@@ -784,6 +835,9 @@ async function triggerRevendor(
         "",
         `- backend: \`${descriptor.backend}\``,
         `- ${descriptor.fromTag} -> ${descriptor.toTag}`,
+        `- ${fetchNote}`,
+        `- classification: \`${classification.class}\`${requiresReview ? " — delivered as a pull request regardless of the requested delivery; a human reads the diff before anything merges" : ""}`,
+        ...classification.reasons.map((r) => `  - ${r}`),
         "",
         plan.summary,
         "",
@@ -802,7 +856,7 @@ async function triggerRevendor(
         commitMessage,
         pullRequestTitle: commitMessage,
         pullRequestBody,
-        delivery: descriptor.delivery,
+        delivery,
         ...(descriptor.expectedHeadCommit
           ? { expectedHeadCommit: descriptor.expectedHeadCommit }
           : {})
@@ -835,7 +889,7 @@ async function trigger(
   ctx: PluginContext,
   intent: TriggerIntent,
   resolveLauncher: ResolveRunnerLauncher,
-  vendorRefreshIO: VendorRefreshIO
+  revendorFetchDeps: RevendorFetchDeps
 ): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   // THE BARE KEY, because it becomes a container NAME — see managed-scan's note of the same shape.
@@ -859,7 +913,7 @@ async function trigger(
     return { externalId };
   }
   if (action === "re-vendor") {
-    await triggerRevendor(ctx, intent, config, externalId, vendorRefreshIO);
+    await triggerRevendor(ctx, intent, config, externalId, resolveLauncher, revendorFetchDeps);
     return { externalId };
   }
 
@@ -1065,18 +1119,18 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-/** THE LAUNCHER SEAM. See docs/plugins.md §301. `vendorRefreshIO` is the SAME shape of seam for the
- *  `re-vendor` strategy's network reach (ADR-0059): the default is the real, network-reaching
+/** THE LAUNCHER SEAM. See docs/plugins.md §301. `revendorFetchDeps` is the SAME shape of seam for
+ *  the `re-vendor` strategy's network reach (ADR-0059): the default is the real, network-reaching
  *  implementation, and every test injects a fixture-backed one instead — never a mock of this
  *  factory's caller. */
 export function createManagedDepExecutorPlugin(
   // THE DEFAULT IS THE SELECTING RESOLVER, NOT THE DOCKER ONE. See docs/plugins.md §302.
   resolveLauncher: ResolveRunnerLauncher = resolveRunnerLauncher,
-  vendorRefreshIO: VendorRefreshIO = realVendorRefreshIO
+  revendorFetchDeps: RevendorFetchDeps = DEFAULT_REVENDOR_FETCH_DEPS
 ): ExecutorPlugin {
   return {
     observe,
-    trigger: (ctx, intent) => trigger(ctx, intent, resolveLauncher, vendorRefreshIO),
+    trigger: (ctx, intent) => trigger(ctx, intent, resolveLauncher, revendorFetchDeps),
     status,
     abort,
     describeCapabilities

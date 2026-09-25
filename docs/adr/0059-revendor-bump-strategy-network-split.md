@@ -55,31 +55,46 @@ The `re-vendor` strategy is split across a trust boundary that did not exist bef
 
 1. **The ORCHESTRATOR** (`packages/plugins/managed-dep`, running in `scpd`/the worker, holding the
    per-run repository-write credential) does ONLY:
-   - Resolve the upstream tag to a commit SHA and fetch BY SHA, never by tag, for the two backends whose
-     manifest lives in the upstream source tree (Argo CD, Argo Events) — a mutable tag is not an identity
-     (the same principle `tools/ci-mirror/images.list`'s own header states for container image tags).
-   - Fetch the GitHub Release asset for the two backends that publish one instead (Argo Workflows, Argo
-     Rollouts), and verify it against a published checksum/provenance file where the release carries one.
-   - Fetch the Gitea chart tarball from the chart repository's own index, verified against the digest the
-     index itself declares.
-   - Resolve every tracked image's digest through the repo's pinned skopeo, and verify each image's cosign
-     signature against the expected upstream identity BEFORE accepting the digest.
-   - Validate that the fetched manifest's own declared image tags equal `toTag`, that `toTag` is NEWER than
-     the version this repository's OWN `values.yaml` currently declares (read from the target repo, which is
-     CommanderSCP's own — never upstream, never untrusted), and refuse a downgrade.
-   - Treats every upstream byte as OPAQUE. It never parses the fetched manifest as YAML; the only parsing it
-     does is of SMALL, STRUCTURED METADATA it fetches for exactly this purpose — a release JSON descriptor, a
-     checksums file, a chart index entry — none of which is the multi-megabyte manifest itself.
+   - Resolve the upstream tag to a commit SHA (`GET /repos/{repo}/commits/{tag}`, routed through
+     `ctx.http` — the plugin host's egress-guarded channel, never a bare `fetch()`) and fetch BY SHA, never
+     by tag, for the two backends whose manifest lives in the upstream source tree (Argo CD, Argo Events) —
+     a mutable tag is not an identity (the same principle `tools/ci-mirror/images.list`'s own header states
+     for container image tags).
+   - Fetch the GitHub Release asset BY TAG for the two backends that publish one instead (Argo Workflows,
+     Argo Rollouts) — a release asset has no commit-sha-addressed form at all, which is an accepted,
+     documented gap rather than a papered-over one (see "Consequences": neither project's published
+     checksums file actually covers `install.yaml`, so there is nothing to verify this fetch against yet).
+   - Fetch the Gitea chart via `helm repo add`/`pull --untar` (the orchestrator's own SCOPED use of helm —
+     fetch only, never template) — the SAME trust level (HTTPS + the chart repository's own index) this
+     tool already had before this split; this ADR does not add a NEW verification mechanism here.
+   - Resolve every tracked image's digest through the repo's pinned skopeo, and — where that backend's
+     upstream signing mechanism is CONFIRMED — verify its cosign signature against the expected identity
+     before accepting the digest. Measured 2026-09-25: only Argo CD publishes a keyless per-image signature
+     with a documented identity; Argo Workflows signs with a STATIC key (not keyless — not yet wired); no
+     confirmed mechanism was found for Argo Rollouts, Argo Events or Gitea. Those four are pinned WITHOUT a
+     signature check, and that gap is logged loudly and named in the resulting pull request — never treated
+     as verified (see `BACKEND_VERIFICATION` in `revendor-orchestrator.ts`).
+   - Relies on the SANDBOX'S OWN inability to resolve a digest for anything the orchestrator did not
+     pre-verify to enforce "the fetched manifest's own declared image tag equals `toTag`" — the orchestrator
+     only ever resolves `coordinate:toTag`, so a manifest declaring a different tag makes the sandbox's own
+     `resolveImageDigest` lookup miss and the plan fail (`tools/vendor-refresh/src/sandbox-io.ts`), with no
+     separate validation step needed.
+   - Reads the version this repository's OWN `values.yaml` CURRENTLY declares (from the target repo, which
+     is CommanderSCP's own — never upstream, never untrusted) and refuses a downgrade (`toTag` not newer).
+   - Treats every upstream byte as OPAQUE. It never parses the fetched manifest as YAML.
    - Hands the verified, opaque bytes (plus the resolved/verified image digest map, plus this repository's
-     OWN current `values.yaml`/`bundle-images.ts`/`images.list` content) to the sandbox, and receives files
-     back.
-   - Checks every returned file path against the FIXED, per-backend path set (`FIXED_VENDOR_PATHS`,
-     `tools/vendor-refresh`) — never the caller-supplied `declaredManifestPaths` the intent carries, which
-     is now cross-checked against the fixed set rather than trusted — and that the target repository equals
-     `config.scpRepo`, a SERVER-INJECTED setting naming the one repository this strategy may ever write to.
-     Both checks run before a single blob is created.
+     OWN current `values.yaml`/`bundle-images.ts`/`images.list` content, plus whatever of the CURRENTLY
+     vendored manifest(s) `declaredManifestPaths` already names) to the sandbox, and receives files back.
+   - Checks that `declaredManifestPaths` IS the fixed vendored set for this backend — the three shared
+     downstream files, or anything under this backend's OWN vendor directory (a prefix rule, not an
+     enumerated file list, so Argo Workflows' split PART COUNT stays upstream's to change — see finding 7)
+     — and that the target repository equals `config.scpRepo`, a SERVER-INJECTED setting naming the one
+     repository this strategy may ever write to. Both checks run before a credential is minted, and the
+     PATH check runs again (over the SANDBOX'S ACTUAL OUTPUT, not merely the declared allowlist) before a
+     single blob is created.
    - Commits the sandbox's returned files via the Git Data API and records the sandbox's diff classification
-     (below) as the outcome's decision record.
+     (below) as the outcome's decision record. A `requires-review` classification forces `pull_request`
+     delivery, overriding whatever the descriptor asked for.
 
 2. **THE SANDBOX** (`apps/runner-dep-vendor`, a new image; see "Why a sibling image, not
    `scp-runner-dep` itself," below) holds NO credential of any kind, reaches NO host (`--network none`,
@@ -144,26 +159,36 @@ in this same family of images; `apps/runner-dep-vendor` follows that precedent, 
 
 ## Consequences
 
-- The orchestrator's egress footprint gains a SMALL, NAMED set of hosts: `raw.githubusercontent.com`,
-  `github.com` (release assets and their checksums/provenance), the Gitea chart repository's index host,
-  and whatever OCI registries the pinned skopeo already reaches for other dependency-automation jobs. Every
-  fetch routes through the plugin host's `ctx.http` — the SAME SSRF/allowlist/redirect-refusal/DNS-pinning
-  guard every other plugin's outbound call already goes through (`docs/plugin-host.md` §23/§28) — with a
-  hardcoded host allowlist, never an operator- or tenant-settable one.
+- The orchestrator's egress footprint gains a SMALL, NAMED set of hosts: `api.github.com` (tag->sha
+  resolution), `raw.githubusercontent.com` and `github.com` (the manifest/release-asset fetch), and the
+  Gitea chart repository host (`helm repo add`/`pull`). The tag->sha resolution and manifest/release-asset
+  fetch route through `ctx.http` — the plugin host's egress-guarded channel, server-allowlisted, never a
+  bare `fetch()` (finding 6). Digest resolution (skopeo) and cosign verification remain SUBPROCESS calls, as
+  they already were everywhere else in this codebase (`@scp/cosign`'s `resolveSkopeo()`/`resolveCosign()`) —
+  `ctx.http`'s JSON-request/JSON-or-text-response shape has no way to front a binary/CLI subprocess, so this
+  is the SAME pre-existing exception the rest of the dependency-automation surface already has, not a new
+  gap this ADR introduces. The Gitea chart `helm pull` is likewise a subprocess call, not `ctx.http` — it is
+  the orchestrator's own narrowly-scoped exception (fetch only; `helm template` itself runs in the sandbox).
 - `apps/runner-dep-vendor` is a NEW image with its own CI publish wiring (`.github/workflows/ci.yml`'s
-  `runner-images` job, `scripts/runner-image-tags.sh`) and its own air-gap bundle entry
-  (`deploy/airgap/src/bundle-images.ts`) — mechanical additions following the exact pattern the four
-  existing runner images already establish.
+  `runner-images` job, `scripts/runner-image-tags.sh`, `.github/workflows/publish-images.yml`) and its own
+  air-gap bundle entry (`deploy/airgap/src/bundle-images.ts`, `deploy/airgap/assets/install.sh`) — mechanical
+  additions following the exact pattern the existing runner images already establish, with ONE deliberate
+  deviation recorded in the Dockerfile's own header: its build CONTEXT is the repo root, not its own
+  directory, because it needs the whole pnpm workspace to resolve `@scp/vendor-refresh`'s `workspace:*`
+  dependencies.
 - A future SIXTH bundled backend needs its own `tools/vendor-refresh` backend spec on BOTH sides of the
   split (what the orchestrator fetches+verifies; what the sandbox parses+transforms) — this ADR is scoped to
   the five backends `tools/vendor-refresh` names today, not a blanket grant.
 - **Named, not silently deferred:** full apps/server governance-engine Decision-table persistence for the
   diff classification (a charter §6 Decision record with a `decision_id`, as opposed to this increment's
   outcome-detail + PR-body recording) needs its own migration and its own review, and is left for a
-  follow-up increment rather than built hastily under this PR's own time pressure. Genuine, real, checksum/
+  follow-up increment rather than built hastily under this PR's own time pressure. Genuine checksum/
   provenance coverage for Argo Workflows/Argo Rollouts' `install.yaml` release asset is ALSO incomplete:
   measured against the real releases (2026-09-25), neither project's published checksums file actually
-  covers `install.yaml` (only their CLI binaries/SBOM are covered) — the orchestrator records this
-  explicitly as "unverified, no checksum published" rather than fabricating a pass, and closing that gap
-  needs either an upstream ask or a different verification mechanism, not a silent claim of coverage this
-  ADR does not have.
+  covers `install.yaml` (only their CLI binaries/SBOM are covered) — the orchestrator fetches these two by
+  tag with no independent verification at all today, which is an honestly-named gap rather than a fabricated
+  pass, and closing it needs either an upstream ask or a different verification mechanism. Cosign coverage is
+  SIMILARLY incomplete and similarly named rather than hidden: only Argo CD's keyless per-image signature is
+  wired and enforced; Argo Workflows (static-key signed — a different, not-yet-built verification path),
+  Argo Rollouts, Argo Events and Gitea are pinned WITHOUT any signature check, logged loudly per run
+  (`BACKEND_VERIFICATION` in `revendor-orchestrator.ts`) rather than silently treated as verified.

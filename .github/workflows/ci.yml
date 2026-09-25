@@ -352,6 +352,16 @@ jobs:
           # IMAGE, and an image nothing builds enforces nothing. `runner-image.integration.test.ts`
           # is what asks the built artifact those questions, and it needs this ref to exist.
           build_and_push "$SCP_RUNNER_DEP_IMAGE_REF" apps/runner-dep
+          # M29.8a — scp-runner-dep-vendor, the `re-vendor` strategy's credential-free sandbox
+          # (ADR-0059). BUILT WITH THE REPO ROOT AS CONTEXT (deliberate deviation — see
+          # apps/runner-dep-vendor/Dockerfile's own header): every sibling runner above builds from
+          # its own apps/runner-*/ directory alone.
+          DOCKER_BUILDKIT=0 docker pull "$SCP_RUNNER_DEP_VENDOR_IMAGE_REF" 2>/dev/null && \
+            echo "cache hit: $SCP_RUNNER_DEP_VENDOR_IMAGE_REF already in GHCR — no build needed." || {
+            echo "cache miss: building $SCP_RUNNER_DEP_VENDOR_IMAGE_REF from repo root and pushing to GHCR."
+            DOCKER_BUILDKIT=0 docker build -f apps/runner-dep-vendor/Dockerfile -t "$SCP_RUNNER_DEP_VENDOR_IMAGE_REF" .
+            docker push "$SCP_RUNNER_DEP_VENDOR_IMAGE_REF"
+          }
           # M27 — scp-runner-ops, the host-reaching catalog runner. Published here for the same
           # reason as its siblings and one more: its charter properties are enforced by DELETION
           # from the image (ADR-0050's allowlist), so `lockdown.integration.test.ts` can only ask

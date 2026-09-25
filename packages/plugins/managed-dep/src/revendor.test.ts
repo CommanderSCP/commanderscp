@@ -1,5 +1,9 @@
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ScopedHttpRequest, ScopedHttpResponse } from "@scp/plugin-api";
-import type { VendorRefreshIO } from "@scp/vendor-refresh";
+import type { ResolveRunnerLauncher, RunnerSpec } from "@scp/runner-launcher";
+import { runSandbox, type FullSandboxInput } from "@scp/vendor-refresh";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   bumpBranchFor,
@@ -7,19 +11,35 @@ import {
   parseRevendorDescriptor,
   __resetManagedDepOutcomes
 } from "./index.js";
+import type { RevendorFetchDeps } from "./revendor-orchestrator.js";
 import { recordingCtx } from "./write-test-support.js";
 
 /**
- * `re-vendor` — end to end through the REAL managed-dep dispatch path (ADR-0059), against a FIXTURE
- * upstream (never the network) and a FAKE GitHub Git Data API (never a real repository). This is the
- * reachability proof for `@scp/vendor-refresh`'s `planVendorRefresh`/`planArgoprojBackend`: deleting
- * the `action === "re-vendor"` dispatch in `index.ts`'s `trigger()`, or the `triggerRevendor` call it
- * makes, turns EVERY test below red (see the PR body's mutation log for the captured red output).
+ * `re-vendor` — end to end through the REAL managed-dep dispatch path (ADR-0059's SPLIT
+ * architecture, owner decision 2026-09-25): the ORCHESTRATOR half runs for real (`ctx.http.request`
+ * against a FIXTURE upstream + a FAKE GitHub Git Data API — never the network, never a real
+ * repository), and the SANDBOX half runs `@scp/vendor-refresh`'s REAL `runSandbox` — the exact
+ * function `apps/runner-dep-vendor`'s entrypoint calls — through a FAKE launcher
+ * ({@link fakeSandboxLauncher}) that reads/writes the same `input.json`/`output.json` files a real
+ * container would, in-process rather than through Docker (Docker-launch reachability is
+ * `apps/runner-dep-vendor`'s own concern — smoke-tested manually against the built image, see the PR
+ * body — this suite's job is the DISPATCH wiring, not the container boundary). This is the
+ * reachability proof for the whole path: deleting the `action === "re-vendor"` dispatch in
+ * `index.ts`'s `trigger()`, the `triggerRevendor` call it makes, or `orchestrateRevendor`'s sandbox
+ * launch, turns tests below red (see the PR body's mutation log for the captured red output).
  */
 
 const { generateKeyPairSync } = await import("node:crypto");
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
+
+// `orchestrateRevendor` (unlike the old in-process planner) writes real scratch files for the
+// sandbox exchange — a REAL, per-test-run temp dir, cleaned up by the OS same as every other
+// mkdtemp-under-tmpdir use in this package's tests.
+const WORKSPACE_ROOT = await mkdtemp(join(tmpdir(), "scp-revendor-test-"));
+function workspaceRoot(): string {
+  return WORKSPACE_ROOT;
+}
 
 const REPO = "CommanderSCP/commanderscp";
 const BASE_BRANCH = "main";
@@ -40,26 +60,54 @@ const FIXTURE_MANIFEST = [
   ""
 ].join("\n");
 
+const OLD_MANIFEST = FIXTURE_MANIFEST.replace("v3.5.0", "v3.4.5");
 const OLD_VALUES_YAML = "image: quay.io/argoproj/argocd:v3.4.5 # Argo CD (Apache-2.0)\n";
 const OLD_BUNDLE_IMAGES_TS = '{ name: "argocd", defaultRef: "quay.io/argoproj/argocd:v3.4.5" }\n';
 const OLD_IMAGES_LIST = "# no argocd line today\n";
 
 const FIXTURE_DIGEST = `sha256:${"7".repeat(64)}`;
+const FIXTURE_SHA = "a".repeat(40);
 
-function fakeVendorRefreshIO(): VendorRefreshIO {
+/** {@link RevendorFetchDeps} — the orchestrator's injectable network/subprocess seam. `resolveImageDigest`
+ *  and `verifyKeylessSignature` stand in for skopeo/cosign; the manifest FETCH itself goes through
+ *  `ctx.http` (faked by {@link revendorGithubHandler} below), not this object — matching the real
+ *  split (`resolveTagCommitSha`/`fetchArgoprojManifest` are `ctx.http` calls; only digest resolution
+ *  and cosign verification are subprocess-shaped, same as every other skopeo/cosign call in this
+ *  codebase). */
+function fakeRevendorFetchDeps(): RevendorFetchDeps {
   return {
-    fetchText: async () => FIXTURE_MANIFEST,
     resolveImageDigest: async () => FIXTURE_DIGEST,
-    runHelmTemplate: async () => {
+    verifyKeylessSignature: () => ({ status: "verified", detail: "fixture: always verified" }),
+    fetchGiteaChart: async () => {
       throw new Error("not used by the argocd backend");
     }
   };
 }
 
-// `deploy/helm-bundled/vendor/argocd/install.yaml` is deliberately ABSENT here: `planVendorRefresh`
-// gets that backend's own vendored content from `io.fetchText` (the upstream fetch), never from a
-// repo read — `readRepoFile` below is called only for the three shared downstream files.
+/** Runs `@scp/vendor-refresh`'s REAL `runSandbox` in-process against the `input.json`/`output.json`
+ *  files a real `apps/runner-dep-vendor` container would exchange via `docker cp` — see this file's
+ *  module doc for why this is the right substitute for a real container launch in a unit suite. */
+function fakeSandboxLauncher(): ResolveRunnerLauncher {
+  return () => ({
+    async run(spec: RunnerSpec) {
+      const inDir = spec.copyIn[0]!.hostDir;
+      const raw = await readFile(join(inDir, "input.json"), "utf8");
+      const input = JSON.parse(raw) as FullSandboxInput;
+      const output = await runSandbox(input);
+      if (spec.copyOut) {
+        await mkdir(spec.copyOut.hostDir, { recursive: true });
+        await writeFile(join(spec.copyOut.hostDir, "output.json"), JSON.stringify(output), "utf8");
+      }
+      return { succeeded: true, stdout: "", stderr: "" };
+    },
+    async reap() {
+      return [];
+    }
+  });
+}
+
 const REPO_FILES: Record<string, string> = {
+  "deploy/helm-bundled/vendor/argocd/install.yaml": OLD_MANIFEST,
   "deploy/helm-bundled/values.yaml": OLD_VALUES_YAML,
   "deploy/airgap/src/bundle-images.ts": OLD_BUNDLE_IMAGES_TS,
   "tools/ci-mirror/images.list": OLD_IMAGES_LIST
@@ -83,15 +131,26 @@ const revendorParams = {
   declaredManifestPaths: DECLARED_MANIFEST_PATHS
 };
 
-/** A fake GitHub Git Data API — blobs/trees/commits/refs — plus the Contents GET this run's
- *  `readRepoFile` uses. Path-aware (unlike `write-test-support.ts`'s `githubHandler`, which answers
- *  every `contents/` GET with the same single fixture): this run reads THREE distinct files. */
+/** A fake GitHub Git Data API — blobs/trees/commits/refs — plus the Contents GET the orchestrator's
+ *  downgrade check/`currentVendoredFiles` read use, AND the two unauthenticated public-upstream
+ *  fetches (tag->sha resolution, the manifest itself). Path-aware (unlike `write-test-support.ts`'s
+ *  `githubHandler`, which answers every `contents/` GET with the same single fixture): this run
+ *  reads four distinct repo-relative paths plus the two upstream URLs. */
 function revendorGithubHandler(
   files: Record<string, string>
 ): (req: ScopedHttpRequest) => ScopedHttpResponse {
   const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
   let blobCounter = 0;
   return (req: ScopedHttpRequest): ScopedHttpResponse => {
+    // THE ORCHESTRATOR'S OWN FETCHES (ADR-0059) — resolve argoproj/argo-cd@v3.5.0 to a commit sha,
+    // then fetch the manifest AT that sha. Neither carries an Authorization header (unlike every
+    // GitHub-App-credentialed call below): these are unauthenticated, public-upstream reads.
+    if (req.url === "https://api.github.com/repos/argoproj/argo-cd/commits/v3.5.0") {
+      return { status: 200, headers: {}, body: { sha: FIXTURE_SHA } };
+    }
+    if (req.url === `https://raw.githubusercontent.com/argoproj/argo-cd/${FIXTURE_SHA}/manifests/install.yaml`) {
+      return { status: 200, headers: {}, body: FIXTURE_MANIFEST };
+    }
     if (req.url.endsWith("/access_tokens")) {
       return {
         status: 201,
@@ -146,7 +205,9 @@ function revendorCtx(files: Record<string, string> = REPO_FILES) {
       ...ctx,
       config: {
         runnerImage: "scp-runner-dep:test",
-        workspaceRoot: "/nonexistent-workspace-that-must-never-be-touched",
+        revendorRunnerImage: "scp-runner-dep-vendor:test",
+        scpRepo: REPO,
+        workspaceRoot: workspaceRoot(),
         provider: "github",
         appId: "12345",
         installationId: "67890",
@@ -223,9 +284,9 @@ describe("parseRevendorDescriptor", () => {
 describe("trigger() dispatches 're-vendor' through the real managed-dep path (E2E, fixture upstream)", () => {
   beforeEach(() => __resetManagedDepOutcomes());
 
-  it("plans, patches values.yaml/bundle-images.ts, commits all files in ONE pull request, and launches no container", async () => {
+  it("plans (via the sandbox), patches values.yaml/bundle-images.ts, and commits all files in ONE pull request", async () => {
     const { ctx, calls } = revendorCtx();
-    const plugin = createManagedDepExecutorPlugin(undefined, fakeVendorRefreshIO());
+    const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());
     const ref = await plugin.trigger(ctx, {
       kind: "custom",
       idempotencyKey: `${CHANGE_ID}:re-vendor`,
@@ -271,7 +332,7 @@ describe("trigger() dispatches 're-vendor' through the real managed-dep path (E2
 
   it("REFUSES (before any write) when the plan proposes a path outside declaredManifestPaths", async () => {
     const { ctx, calls } = revendorCtx();
-    const plugin = createManagedDepExecutorPlugin(undefined, fakeVendorRefreshIO());
+    const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());
     const narrowParams = {
       ...revendorParams,
       // Missing bundle-images.ts — the plan will still try to patch it, and must be refused rather
@@ -294,9 +355,84 @@ describe("trigger() dispatches 're-vendor' through the real managed-dep path (E2
     expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/git/blobs"))).toBe(false);
   });
 
+  /** MUTATION-PROVE (finding 1): a manifest that smuggles authority alongside a real bump forces
+   *  `pull_request` delivery even when `auto_merge` was requested and evidenced — the classification
+   *  downgrade in `triggerRevendor` must not be bypassable by the descriptor's own delivery field. */
+  it("classification requires-review forces pull_request delivery even when auto_merge was requested", async () => {
+    const manifestWithBinding =
+      FIXTURE_MANIFEST +
+      [
+        "---",
+        "apiVersion: rbac.authorization.k8s.io/v1",
+        "kind: ClusterRoleBinding",
+        "metadata:",
+        "  name: attacker-binding",
+        "roleRef:",
+        "  kind: ClusterRole",
+        "  name: cluster-admin",
+        "  apiGroup: rbac.authorization.k8s.io",
+        ""
+      ].join("\n");
+    const handler = (req: ScopedHttpRequest): ScopedHttpResponse => {
+      if (req.url === `https://raw.githubusercontent.com/argoproj/argo-cd/${FIXTURE_SHA}/manifests/install.yaml`) {
+        return { status: 200, headers: {}, body: manifestWithBinding };
+      }
+      return revendorGithubHandler(REPO_FILES)(req);
+    };
+    const { ctx, calls } = recordingCtx(handler);
+    ctx.config = {
+      runnerImage: "scp-runner-dep:test",
+      revendorRunnerImage: "scp-runner-dep-vendor:test",
+      scpRepo: REPO,
+      workspaceRoot: workspaceRoot(),
+      provider: "github",
+      appId: "12345",
+      installationId: "67890",
+      privateKeyPem
+    };
+    const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());
+    const ref = await plugin.trigger(ctx, {
+      kind: "custom",
+      idempotencyKey: `${CHANGE_ID}:re-vendor:requires-review`,
+      parameters: {
+        ...revendorParams,
+        delivery: "auto_merge" as const,
+        expectedHeadCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+      }
+    });
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("succeeded");
+    // NEVER merged, despite auto_merge being requested and an expectedHeadCommit supplied — the PR
+    // exists (opened) and stands for a human.
+    expect(status.detail).toMatch(/opened as/);
+    expect(status.detail).not.toMatch(/merged as/);
+    expect(calls.some((c) => c.method === "PUT" && c.url.includes("/pulls/") && c.url.endsWith("/merge"))).toBe(
+      false
+    );
+  });
+
+  /** MUTATION-PROVE (owner decision, "the target repository is the one CommanderSCP is configured
+   *  to vendor its own stack into, which is never tenant-configurable"): a descriptor naming a
+   *  DIFFERENT repository than the configured `scpRepo` must be refused BEFORE a credential is
+   *  minted, regardless of how well-formed the rest of the descriptor is. */
+  it("REFUSES a descriptor whose repo does not match the configured scpRepo", async () => {
+    const { ctx, calls } = revendorCtx();
+    ctx.config = { ...(ctx.config as object), scpRepo: "someone-else/other-repo" };
+    const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());
+    const ref = await plugin.trigger(ctx, {
+      kind: "custom",
+      idempotencyKey: `${CHANGE_ID}:re-vendor:wrong-repo`,
+      parameters: revendorParams
+    });
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/REFUSED \(repo_not_scp_repo\)/);
+    expect(calls).toHaveLength(0);
+  });
+
   it("REFUSES a malformed re-vendor intent as a failed run, without reaching the provider", async () => {
     const { ctx, calls } = revendorCtx();
-    const plugin = createManagedDepExecutorPlugin(undefined, fakeVendorRefreshIO());
+    const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());
     const ref = await plugin.trigger(ctx, {
       kind: "custom",
       idempotencyKey: `${CHANGE_ID}:re-vendor:bad`,

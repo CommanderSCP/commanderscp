@@ -734,15 +734,29 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
               `managed-dep: creating the commit for '${target.repo}' failed (HTTP ${commit.status})`
             );
           }
-          const commitSha = ((commit.body as { sha?: unknown }).sha ?? "") as string;
+          let commitSha = ((commit.body as { sha?: unknown }).sha ?? "") as string;
           if (!commitSha) {
             throw new Error("managed-dep: commit creation returned no sha");
           }
 
-          // 5. THE HEAD BRANCH. Create it (201), or — a retry of the SAME logical re-vendor, whose
-          //    branch name carries the originating change's id — force-update it to this run's
-          //    freshly recomputed commit: `planVendorRefresh` is deterministic given the same tag and
-          //    the same base content, so re-pointing the branch converges rather than diverging.
+          // 5. THE HEAD BRANCH. Create it (201), OR — a retry of the SAME logical re-vendor, whose
+          //    branch name carries the originating change's id — check whether it ALREADY IS this
+          //    exact content before touching it at all (2026-09-25 review, finding 8).
+          //
+          //    THE BUG THIS REPLACES: the previous version force-updated the ref unconditionally on a
+          //    422, on the theory that "planVendorRefresh is deterministic, so re-pointing converges".
+          //    That reasoning is true only when the INPUTS are unchanged — and says nothing about
+          //    bytes THIS run did not author. A human who pushed a review fixup onto this exact
+          //    branch (the same branch name a governed auto-merge is about to act on) would have that
+          //    fixup silently discarded by the next retry, with no error and no trace beyond a
+          //    force-pushed ref. The fix is CONVERGENCE, not FORCE: this run's own newly-computed tree
+          //    (`newTreeSha`, content-addressed) is compared against whatever the branch ALREADY
+          //    points at. Identical tree -> the branch already IS this run's output (a genuine retry,
+          //    by this run or an earlier one) -> reuse it, no ref write at all. Different tree -> the
+          //    branch carries content this run did not just compute -> REFUSE outright, never guess
+          //    which side is right. A caller that genuinely needs different content on this branch
+          //    (the inputs changed) must use a fresh `changeObjectId`, which is a fresh branch name —
+          //    exactly the boundary `bumpBranchFor`/`headBranch` already exist to give one.
           const branchCreate = await api("POST", `/repos/${target.repo}/git/refs`, {
             ref: `refs/heads/${target.headBranch}`,
             sha: commitSha
@@ -753,16 +767,50 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
                 `managed-dep: cannot create branch '${target.headBranch}' on '${target.repo}' (HTTP ${branchCreate.status})`
               );
             }
-            const update = await api(
-              "PATCH",
-              `/repos/${target.repo}/git/refs/heads/${encodePathSegments(target.headBranch)}`,
-              { sha: commitSha, force: true }
+            const existingRef = await api(
+              "GET",
+              `/repos/${target.repo}/git/ref/heads/${encodePathSegments(target.headBranch)}`
             );
-            if (update.status !== 200) {
+            if (existingRef.status !== 200) {
               throw new Error(
-                `managed-dep: cannot update branch '${target.headBranch}' on '${target.repo}' to the recomputed commit (HTTP ${update.status})`
+                `managed-dep: branch '${target.headBranch}' on '${target.repo}' could not be read after a 422 create (HTTP ${existingRef.status})`
               );
             }
+            const existingSha = ((existingRef.body as { object?: { sha?: unknown } }).object?.sha ??
+              "") as string;
+            if (!existingSha) {
+              throw new Error(
+                `managed-dep: branch '${target.headBranch}' on '${target.repo}' resolved to no sha`
+              );
+            }
+            if (existingSha !== commitSha) {
+              const existingCommit = await api(
+                "GET",
+                `/repos/${target.repo}/git/commits/${existingSha}`
+              );
+              const existingTreeSha =
+                existingCommit.status === 200
+                  ? (((existingCommit.body as { tree?: { sha?: unknown } }).tree?.sha ?? "") as string)
+                  : "";
+              if (!existingTreeSha || existingTreeSha !== newTreeSha) {
+                throw new Error(
+                  `managed-dep: REFUSED — branch '${target.headBranch}' on '${target.repo}' already exists ` +
+                    `with content DIFFERENT from what this run just computed (existing tree ` +
+                    `${existingTreeSha || "unreadable"}, computed tree ${newTreeSha}). Refusing to force-` +
+                    "overwrite it — a prior identical run would have converged on the SAME tree; this one " +
+                    "did not, which means either the inputs changed since that branch was written, or " +
+                    "something else (a human fixup, another run) pushed to it. A genuine re-vendor of " +
+                    "different content must use a fresh changeObjectId, not overwrite this branch."
+                );
+              }
+              // CONVERGED: same tree, different commit object (an earlier run's own output, or this
+              // run's own retry after a partial failure). Reuse the EXISTING commit — nothing was
+              // written to the branch, so nothing needed to be.
+              commitSha = existingSha;
+            }
+            // existingSha === commitSha: the branch already points at exactly the commit this run
+            // just (re)computed — nothing to do (can happen if an earlier attempt's ref-update
+            // succeeded but its response was lost before this run learned that).
           }
 
           // 6. THE PULL REQUEST. Same duplicate story as `publishBump`.
