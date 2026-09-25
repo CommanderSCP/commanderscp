@@ -359,6 +359,10 @@ const UNIT_HOOK_OVERRIDES: Record<string, { ms: number; why: string }> = {
     ms: 30_000,
     why: "same warm-up, and the same value as its connect-argocd sibling this file was modelled on"
   },
+  "packages/cli/src/whoami-cli.test.ts": {
+    ms: 30_000,
+    why: "same warm-up as its CLI siblings (M29.1)"
+  },
   "packages/cli/src/connect-gitea-cli.test.ts": {
     ms: 30_000,
     why: "same warm-up; modelled on connect-argo-workflows (M29.2)"

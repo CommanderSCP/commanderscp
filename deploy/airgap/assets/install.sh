@@ -61,6 +61,9 @@ DRY_RUN=0
 REGISTRY=""
 INSECURE_REGISTRY=0
 PUBKEY="${SCP_COSIGN_PUBKEY:-}"
+KUBE_CONTEXT=""
+TIMEOUT=300
+SKIP_BUNDLED_BACKENDS=0
 
 usage() {
   cat <<'EOF'
@@ -80,6 +83,20 @@ Options:
   --mode helm|compose     Install mode (default: helm)
   --namespace <ns>        Kubernetes namespace (helm mode only; default: helm's current context default)
   --release-name <name>   Helm release name (helm mode only; default: scp)
+  --kube-context <ctx>    Kubernetes context to install into (helm mode only; default: helm's
+                            current context). Passed straight through as `helm --kube-context`.
+  --timeout <seconds>     helm --wait timeout for the SCP release itself (helm mode only;
+                            default: 300). This script did not wait for readiness at all before
+                            M29.1 (the front door) — the earlier plain
+                            `helm upgrade --install` here returned as soon as the API server
+                            accepted the release, not once pods were actually Ready.
+  --skip-bundled-backends  Do not run scp-bundled.sh for this bundle's Argo/Gitea backends (helm
+                            mode only). For an install driven by `scp install`, which turns on the
+                            stack controller (stackd.enabled, on by default since M29.1) and
+                            enables backends through the Standard Stack API instead — running BOTH
+                            would apply the same backend twice, under two different field managers.
+                            Calling this script directly (without `scp install`) should NOT pass
+                            this flag, or nothing installs the backends this bundle carries.
   --insecure-registry      Allow plain-HTTP/self-signed-TLS registries (skopeo --dest-tls-verify=false).
                             Only for a registry you control on a trusted network (e.g. an internal
                             air-gapped registry with a self-signed cert, or a local test registry) —
@@ -100,6 +117,9 @@ while [[ $# -gt 0 ]]; do
     --namespace) NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
     --release-name) RELEASE_NAME="${2:?--release-name requires a value}"; shift 2 ;;
     --mode) MODE="${2:?--mode requires a value}"; shift 2 ;;
+    --kube-context) KUBE_CONTEXT="${2:?--kube-context requires a value}"; shift 2 ;;
+    --timeout) TIMEOUT="${2:?--timeout requires a value}"; shift 2 ;;
+    --skip-bundled-backends) SKIP_BUNDLED_BACKENDS=1; shift ;;
     --insecure-registry) INSECURE_REGISTRY=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -131,6 +151,26 @@ fi
 if [[ ! -f "$PUBKEY" ]]; then
   echo "install.sh: FAIL — --pubkey/SCP_COSIGN_PUBKEY points at a file that does not exist: $PUBKEY" >&2
   exit 2
+fi
+
+# #422 review fix (SHOULD-FIX 7) — RESOLVE --kube-context ONCE, HERE, and PIN it for every
+# kubectl/helm call this script (and anything it shells out to) makes from this point on,
+# including scp-bundled.sh (step 4 below) — which used to see none of this: only the ONE `helm
+# upgrade --install` for the SCP release itself got `--kube-context`, so an operator naming a
+# non-current context got the SCP release in the right place and the bundled backends in whatever
+# context happened to be `current-context` — a split-brain install across two clusters with no
+# error. Building an ISOLATED, MINIFIED kubeconfig whose `current-context` IS the target and
+# exporting KUBECONFIG to it does this for every child process (scp-bundled.sh included) without
+# threading a flag through each of that script's ~20 kubectl/helm call sites individually — the
+# same isolation technique scripts/kind-drill.sh already uses, generalized here to "pin to a named
+# context" rather than "pin to a freshly created cluster".
+if [[ -n "$KUBE_CONTEXT" && "$MODE" == "helm" ]]; then
+  command -v kubectl >/dev/null 2>&1 || { echo "install.sh: --kube-context requires kubectl on PATH" >&2; exit 2; }
+  ISOLATED_KUBECONFIG="$(mktemp -d)/install-sh.kubeconfig"
+  kubectl config view --minify --context="$KUBE_CONTEXT" --flatten > "$ISOLATED_KUBECONFIG" \
+    || { echo "install.sh: FAIL — no such kube context '${KUBE_CONTEXT}' (kubectl config view --minify failed)" >&2; exit 2; }
+  export KUBECONFIG="$ISOLATED_KUBECONFIG"
+  echo "== targeting kube context '${KUBE_CONTEXT}' (cluster: $(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo '?')) =="
 fi
 
 for bin in skopeo cosign; do
@@ -373,7 +413,11 @@ if [[ "$MODE" == "helm" ]]; then
   HELM_ARGS=(upgrade --install "$RELEASE_NAME" "${SCRIPT_DIR}/helm"
     --set "image.repository=${SCPD_REPOSITORY}"
     --set "image.tag=${SCPD_TAG}"
-    --set "managedIac.runnerImage=${RUNNER_IAC_REF}")
+    --set "managedIac.runnerImage=${RUNNER_IAC_REF}"
+    --wait --timeout "${TIMEOUT}s")
+  if [[ -n "$KUBE_CONTEXT" ]]; then
+    HELM_ARGS+=(--kube-context "$KUBE_CONTEXT")
+  fi
   # Bundled executor backends (Mode B) are NOT part of the SCP release: their vendored manifests
   # exceed Helm's 1 MB release-Secret limit. The stack controller installs them (M29.4) and wires
   # them into SCP (M29.2) when an operator enables one through SCP. Here we only record which
@@ -549,6 +593,10 @@ if [[ "$MODE" == "helm" ]]; then
     # The bundled backends this bundle carries are installed AND wired by the stack controller the
     # moment one is enabled through SCP — the execution system, its scoped token, TLS trust and
     # both egress layers, with nothing to run against the backend itself (M29.2, ADR-0061).
+    # `--skip-bundled-backends`/`scp install`'s own stack-enable step (ADR-0060 §1) drove this
+    # before M29.2 landed; the old scp-bundled.sh apply loop it was built to avoid double-running
+    # against is gone now, so this flag is a harmless, unused no-op kept for one release for any
+    # script already passing it.
     if [[ ${#BUNDLED_APPLY[@]} -gt 0 ]]; then
       if [[ -n "${SCP_STACKD_DIGEST:-}" ]]; then
         echo "   STANDARD STACK: this bundle carries ${BUNDLED_APPLY[*]}. Enable any of them on"

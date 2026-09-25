@@ -316,6 +316,18 @@ export async function createTestOrg(server: TestServer, label = "org"): Promise<
   if (!result.oneTimePassword)
     throw new Error("expected a freshly created org to return a one-time password");
 
+  // #422 review fix — ensureBootstrapAdmin now always sets mustChangePassword: true (the same
+  // property a REAL bootstrap admin gets, so the one-time password actually retires — see
+  // require-auth.ts's gate). A test fixture models an org that has ALREADY finished onboarding,
+  // not the first-login flow itself (that flow gets its own dedicated test,
+  // auth.integration.test.ts's "mustChangePassword" describe block) — so this clears it directly
+  // rather than making every one of this repo's `createTestOrg` callers pay for an extra
+  // POST /auth/password round trip.
+  await server.deps.db
+    .update(users)
+    .set({ mustChangePassword: false })
+    .where(and(eq(users.orgId, result.orgId), eq(users.username, adminUsername)));
+
   const login = await server.app.inject({
     method: "POST",
     url: "/api/v1/auth/login",

@@ -16,6 +16,7 @@ import type {
   ChangeState,
   ChangeWaitStatus,
   CreateObjectRequest,
+  CurrentUser,
   Decision,
   DesiredStateManifest,
   DoctorCheck,
@@ -131,6 +132,7 @@ import {
 import { saveCredentials } from "./config-store.js";
 import { clientFromStoredCredentials, resolveLoginBaseUrl } from "./client-factory.js";
 import { registerInstanceOperatorCommands, registerStackCommands } from "./stack-cli.js";
+import { registerInstallCommand } from "./install-cli.js";
 import { readServiceExportSpec } from "./estate-reader.js";
 import { discoveryRequestForExecutionSystem, groupDiscoveryProposal } from "./scaffold-reader.js";
 import { promptLine } from "./prompt.js";
@@ -2082,6 +2084,48 @@ export function buildProgram(): Command {
         console.log(`Logged in as '${username}' (org: ${result.org}). Token stored.`);
       }
     );
+
+  // M29.1 (the front door) — the plain way to confirm "am I actually logged in", the same
+  // question `scp install`'s own DoD asks ("reaches a logged-in admin session"). Session-based
+  // (GET /auth/me), so it also confirms the STORED credentials from `scp login`/`scp install`
+  // still resolve to a live session, not just that a token was written to disk.
+  program
+    .command("whoami")
+    .description("Show the currently authenticated session")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const me = await client.auth.me();
+      printResult(me, opts.output, (item) => {
+        const u = item as CurrentUser;
+        return {
+          username: u.username,
+          org: u.orgName,
+          userId: u.userId,
+          instanceRole: u.instanceRole,
+          roles: u.roleBindings.map((b) => b.roleName).join(",") || "-"
+        };
+      });
+    });
+
+  // #422 review fix (SHOULD-FIX 3) — the local-user password-change door: API (POST
+  // /auth/password) -> SDK (client.auth.changePassword) -> here -> UI (routes/change-password.tsx).
+  // This is what actually retires a bootstrap/one-time password: require-auth.ts refuses every
+  // OTHER door until this succeeds.
+  program
+    .command("passwd")
+    .description("Change your local-auth password (required first if one was ever set for you)")
+    .option("-c, --current-password <password>", "current password", process.env.SCP_PASSWORD)
+    .option("-n, --new-password <password>", "new password (min 12 characters)")
+    .option("--base-url <url>", "API base URL override")
+    .action(async (opts: BaseCliOpts & { currentPassword?: string; newPassword?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const currentPassword = opts.currentPassword ?? (await promptLine("Current password: "));
+      const newPassword = opts.newPassword ?? (await promptLine("New password (min 12 chars): "));
+      await client.auth.changePassword(currentPassword, newPassword);
+      console.log("Password changed.");
+    });
 
   // pat (Personal Access Tokens — BUILD_AND_TEST.md §8 M2 item 3)
   const patCmd = program.command("pat").description("Manage Personal Access Tokens");
@@ -7706,6 +7750,9 @@ export function buildProgram(): Command {
   // M29.4 — the Standard Stack (ADR-0058).
   registerStackCommands(program);
   registerInstanceOperatorCommands(program);
+
+  // M29.1 — the front door (docs/adr/0060-front-door.md).
+  registerInstallCommand(program);
 
   return program;
 }

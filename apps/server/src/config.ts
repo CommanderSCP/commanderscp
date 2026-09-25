@@ -34,6 +34,11 @@ export interface ServerConfig {
   operatorToken?: string;
   bootstrapOrgName: string;
   bootstrapAdminUsername: string;
+  /** M29.1 — `SCP_BOOTSTRAP_ADMIN_PASSWORD`, the chart-generated one-time password the installer
+   *  also reads (from the `<release>-bootstrap-admin` Secret) and prints. Unset: unchanged
+   *  behaviour, `ensureBootstrapAdmin` generates its own and logs it (dev/compose). See
+   *  docs/server.md and docs/adr/0060-front-door.md. */
+  bootstrapAdminPassword?: string;
   cookieSecret: string;
   /** Base URL the server uses to call its own public API (UI SSR dogfoods the SDK). This is a
    *  SELF-call address — never hand it to a human or an external party (that was the device-flow
@@ -322,6 +327,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     appVersion: (env.SCP_APP_VERSION ?? "").trim() || "dev",
     bootstrapOrgName: env.SCP_BOOTSTRAP_ORG ?? "default",
     bootstrapAdminUsername: env.SCP_BOOTSTRAP_ADMIN_USERNAME ?? "admin",
+    bootstrapAdminPassword: (env.SCP_BOOTSTRAP_ADMIN_PASSWORD ?? "").trim() || undefined,
     cookieSecret: env.SCP_COOKIE_SECRET ?? randomSecret(),
     internalBaseUrl: env.SCP_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}/api/v1`,
     publicBaseUrl: loadPublicBaseUrl(env),

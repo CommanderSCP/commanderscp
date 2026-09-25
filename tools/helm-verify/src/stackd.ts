@@ -144,7 +144,19 @@ export async function verifyStackController(ctx: StackdVerifyContext): Promise<s
   const clusterRole = `${full}-stackd-cluster`;
   const namespacedRole = `${full}-stackd-namespaced`;
 
-  const off = ctx.renderChart(release, ["--namespace", ns, "--set", "networkPolicy.enabled=true"]);
+  // M29.1 (ADR-0058 "the default flip"): stackd.enabled is now the chart's OWN default (true), so
+  // the "off" baseline this diff needs must say so explicitly — the bare render below it replaced
+  // is no longer off at all, and the diff would silently become "added: []" instead of failing
+  // loudly, which is exactly the shape CLAUDE.md's grep-blind-spot warning is about: a test that
+  // stops testing anything and stays green.
+  const off = ctx.renderChart(release, [
+    "--namespace",
+    ns,
+    "--set",
+    "networkPolicy.enabled=true",
+    "--set",
+    "stackd.enabled=false"
+  ]);
   const on = ctx.renderChart(release, [
     "--namespace",
     ns,
@@ -989,5 +1001,288 @@ function verifyStackdNamespaceIsolation(
   }
   return [
     `  stack controller namespace: ${points} value-matrix cells (${grantsSeen} bindings) grant nothing in ${p.sns} to anyone but the controller; ${refusals.length} placements refused`
+  ];
+}
+
+/**
+ * #422 adversarial review (LIVE RISK) — the `existingSecret`-style overrides for the two Secrets
+ * this file's own header touches (`stackd.existingCredentialSecret`,
+ * `bootstrap.existingAdminPasswordSecret`) must be genuinely STABLE under a `lookup`-blind render
+ * (Argo CD): rendering twice from the SAME inputs must be byte-identical for the objects that
+ * reference them, and the chart must render NEITHER of the two Secrets it would otherwise
+ * generate. A render that still varied between runs (still calling `randAlphaNum`/`randBytes`
+ * somewhere in the referencing path) would silently reintroduce the GitOps regeneration risk this
+ * override exists to remove.
+ */
+export function verifyExistingSecretOverrides(ctx: StackdVerifyContext): string[] {
+  const { fail, renderChart } = ctx;
+  const release = "verify-existing";
+  const ns = "verify-scp";
+  const full = `${release}-commanderscp`;
+
+  const args = [
+    "--namespace",
+    ns,
+    "--set",
+    "stackd.enabled=true",
+    "--set",
+    "stackd.existingCredentialSecret=my-stackd-credential",
+    "--set",
+    "stackd.existingCredentialSecretKey=cred",
+    // #422 re-verify BLOCKING 2a — required together with existingCredentialSecret above (the
+    // migrations Job, in the RELEASE namespace, cannot read a Secret in stackd.namespace under
+    // GitOps); the chart FAILS the render without them, which verifyRequiresCredentialHash below
+    // exercises directly.
+    "--set",
+    "stackd.existingCredentialTokenId=abcdefghijklmnopqrstuv",
+    "--set",
+    "stackd.existingCredentialSha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
+    "--set",
+    "bootstrap.existingAdminPasswordSecret=my-bootstrap-admin",
+    "--set",
+    "bootstrap.existingAdminPasswordSecretKey=pw"
+  ];
+  const first = renderChart(release, args);
+  const second = renderChart(release, args);
+
+  const stackdCredentialSecretName = `${full}-stackd`;
+  const bootstrapSecretName = `${full}-bootstrap-admin`;
+
+  for (const rendered of [first, second]) {
+    if (
+      rendered.some((d) => d.kind === "Secret" && d.metadata?.name === stackdCredentialSecretName)
+    ) {
+      fail(
+        `[stackd] stackd.existingCredentialSecret is set, but the chart still rendered its own ` +
+          `generated credential Secret '${stackdCredentialSecretName}' — the override did not take`
+      );
+    }
+    if (rendered.some((d) => d.kind === "Secret" && d.metadata?.name === bootstrapSecretName)) {
+      fail(
+        `[bootstrap] bootstrap.existingAdminPasswordSecret is set, but the chart still rendered ` +
+          `its own generated Secret '${bootstrapSecretName}' — the override did not take`
+      );
+    }
+  }
+
+  interface SecretRef {
+    name?: string;
+    value?: string;
+    valueFrom?: { secretKeyRef?: { name?: string; key?: string } };
+  }
+  const envVar = (
+    docs: K8sDoc[],
+    kind: string,
+    name: string,
+    envName: string
+  ): SecretRef | undefined => {
+    const doc = docs.find((d) => {
+      if (d.kind !== kind) return false;
+      return kind === "Job"
+        ? String(d.metadata?.name).includes("-migrate-")
+        : d.metadata?.name === name;
+    });
+    const podTemplate = (doc?.["spec"] as Record<string, unknown> | undefined)?.["template"] as
+      { spec?: { containers?: { env?: SecretRef[] }[] } } | undefined;
+    const env = podTemplate?.spec?.containers?.[0]?.env ?? [];
+    return env.find((e) => e.name === envName);
+  };
+
+  // THE MEANINGFUL ASSERTION (mutation-caught while writing this: a byte-identical-across-renders
+  // check on a secretKeyRef is NOT sensitive to it silently pointing at the WRONG secret — a
+  // secretKeyRef {name, key} is a deterministic reference regardless of what the referenced Secret
+  // holds, so a render that pointed it back at the chart's own generated Secret name would still
+  // "look stable." What actually proves the override took is the reference's NAME/KEY equalling
+  // the configured value, checked directly, not inferred from repeat-render stability).
+  function assertSecretKeyRef(
+    label: string,
+    ref: SecretRef | undefined,
+    expectedName: string,
+    expectedKey: string
+  ): void {
+    const skr = ref?.valueFrom?.secretKeyRef;
+    if (!skr) {
+      fail(`[existing-secret] ${label}: no env var found to check`);
+      return;
+    }
+    if (skr.name !== expectedName || skr.key !== expectedKey) {
+      fail(
+        `[existing-secret] ${label}: expected secretKeyRef {name: ${expectedName}, key: ${expectedKey}}, ` +
+          `got {name: ${skr.name}, key: ${skr.key}} — the existingSecret override is not reaching this env var`
+      );
+    }
+  }
+
+  for (const rendered of [first, second]) {
+    assertSecretKeyRef(
+      "stackd controller's SCP_STACKD_OPERATOR_CREDENTIAL",
+      envVar(rendered, "Deployment", stackdCredentialSecretName, "SCP_STACKD_OPERATOR_CREDENTIAL"),
+      "my-stackd-credential",
+      "cred"
+    );
+    // #422 re-verify BLOCKING 2a — the migrations Job (release namespace) never gets the RAW
+    // credential (that would need a second copy of it OUTSIDE stackd.namespace); it gets the
+    // id/sha256 pair as plain literal values, the same shape the chart's own self-generated path
+    // already uses.
+    const tokenIdVar = envVar(rendered, "Job", "", "SCP_STACKD_CREDENTIAL_TOKEN_ID");
+    const shaVar = envVar(rendered, "Job", "", "SCP_STACKD_CREDENTIAL_SHA256");
+    if (tokenIdVar?.value !== "abcdefghijklmnopqrstuv") {
+      fail(
+        `[existing-secret] migrations Job's SCP_STACKD_CREDENTIAL_TOKEN_ID: expected literal ` +
+          `value 'abcdefghijklmnopqrstuv', got ${JSON.stringify(tokenIdVar?.value)}`
+      );
+    }
+    if (shaVar?.value !== "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd") {
+      fail(
+        `[existing-secret] migrations Job's SCP_STACKD_CREDENTIAL_SHA256: expected the configured ` +
+          `literal value, got ${JSON.stringify(shaVar?.value)}`
+      );
+    }
+    assertSecretKeyRef(
+      "api pod's SCP_BOOTSTRAP_ADMIN_PASSWORD",
+      envVar(rendered, "Deployment", `${full}-api`, "SCP_BOOTSTRAP_ADMIN_PASSWORD"),
+      "my-bootstrap-admin",
+      "pw"
+    );
+  }
+
+  // Byte-identical across two renders is still worth checking (it is the property a
+  // `lookup`-blind GitOps render actually needs), now ALONGSIDE the direct reference check above
+  // rather than instead of it.
+  for (const [label, get] of [
+    [
+      "stackd controller's SCP_STACKD_OPERATOR_CREDENTIAL",
+      (d: K8sDoc[]) =>
+        envVar(d, "Deployment", stackdCredentialSecretName, "SCP_STACKD_OPERATOR_CREDENTIAL")
+    ],
+    [
+      "migrations Job's SCP_STACKD_CREDENTIAL_TOKEN_ID/SHA256",
+      (d: K8sDoc[]) => [
+        envVar(d, "Job", "", "SCP_STACKD_CREDENTIAL_TOKEN_ID"),
+        envVar(d, "Job", "", "SCP_STACKD_CREDENTIAL_SHA256")
+      ]
+    ],
+    [
+      "api pod's SCP_BOOTSTRAP_ADMIN_PASSWORD",
+      (d: K8sDoc[]) => envVar(d, "Deployment", `${full}-api`, "SCP_BOOTSTRAP_ADMIN_PASSWORD")
+    ]
+  ] as const) {
+    const a = JSON.stringify(get(first));
+    const b = JSON.stringify(get(second));
+    if (a !== b) {
+      fail(
+        `[existing-secret] ${label} differs across two renders of the SAME inputs (run1=${a}, run2=${b})`
+      );
+    }
+  }
+
+  return [
+    "  existingSecret overrides (stackd.existingCredentialSecret, " +
+      "bootstrap.existingAdminPasswordSecret): neither generated Secret rendered, every " +
+      "referencing secretKeyRef names the CONFIGURED secret (not the chart's own generated one), " +
+      "and every reference is byte-identical across two renders (GitOps/Argo CD stability)"
+  ];
+}
+
+/**
+ * #422 re-verify, BLOCKING 2 — three guards found live against the owner's homelab-shaped chart
+ * values (which track `main`, set NONE of the M29.1 bootstrap/stackd keys, and pin `image.tag`
+ * with a `@sha256:` digest):
+ *
+ * 1. A render with NONE of those keys set must be BYTE-FOR-BYTE what it was before M29.1 —
+ *    specifically, no `-bootstrap-admin` Secret (which would otherwise re-randomize on every
+ *    `lookup`-blind GitOps render) and no api Deployment env-var change referencing it.
+ * 2. `stackd.existingCredentialSecret` without BOTH `existingCredentialTokenId` and
+ *    `existingCredentialSha256` must FAIL the render loudly (BLOCKING 2a) — a silent fall-through
+ *    to a self-generated credential the controller was never given would be worse than an error.
+ * 3. `stackd.enabled=true` with a digest-pinned `image.tag` and no `stackd.image.tag` must FAIL
+ *    the render loudly (BLOCKING 2c) — the controller would otherwise try to pull scpd's digest
+ *    under the scp-stackd repository, which does not exist there.
+ */
+export function verifyBlocking2Guards(ctx: StackdVerifyContext): string[] {
+  const { fail, renderChart } = ctx;
+  const full = "verify-homelab-commanderscp";
+
+  // 1. Homelab-shaped baseline: no opinion on any M29.1 key at all.
+  const baseline = renderChart("verify-homelab", []);
+  if (baseline.some((d) => d.kind === "Secret" && d.metadata?.name === `${full}-bootstrap-admin`)) {
+    fail(
+      "[blocking-2] a render with NO bootstrap/stackd keys set still rendered a " +
+        `'${full}-bootstrap-admin' Secret — bootstrap.generate must default to false and this ` +
+        "must stay unrendered until an operator (or scp install) explicitly asks for it"
+    );
+  }
+  const apiDeploy = baseline.find(
+    (d) => d.kind === "Deployment" && d.metadata?.name === `${full}-api`
+  );
+  const apiEnv =
+    (
+      (apiDeploy?.["spec"] as Record<string, unknown> | undefined)?.["template"] as
+        { spec?: { containers?: { env?: { name?: string }[] }[] } } | undefined
+    )?.spec?.containers?.[0]?.env ?? [];
+  if (apiEnv.some((e) => e.name === "SCP_BOOTSTRAP_ADMIN_PASSWORD")) {
+    fail(
+      "[blocking-2] a render with NO bootstrap/stackd keys set still added SCP_BOOTSTRAP_ADMIN_PASSWORD " +
+        "to the api Deployment — this must stay absent until bootstrap.generate or " +
+        "bootstrap.existingAdminPasswordSecret is set"
+    );
+  }
+  if (baseline.some((d) => String(d.metadata?.name ?? "").includes("-stackd"))) {
+    fail(
+      "[blocking-2] a render with NO bootstrap/stackd keys set rendered a stackd object — " +
+        "stackd.enabled must default to false (ADR-0060 §3)"
+    );
+  }
+
+  // 2. existingCredentialSecret without the id/sha256 pair must fail loudly (BLOCKING 2a).
+  try {
+    renderChart("verify-homelab-2a", [
+      "--set",
+      "stackd.enabled=true",
+      "--set",
+      "stackd.existingCredentialSecret=my-stackd-credential"
+      // Deliberately NOT setting existingCredentialTokenId/existingCredentialSha256.
+    ]);
+    fail(
+      "[blocking-2a] stackd.existingCredentialSecret set WITHOUT existingCredentialTokenId/" +
+        "existingCredentialSha256 rendered successfully — it must fail the render instead"
+    );
+  } catch (err) {
+    const msg = String(err);
+    if (!msg.includes("existingCredentialTokenId") && !msg.includes("existingCredentialSha256")) {
+      fail(
+        `[blocking-2a] the render DID fail as expected, but not with the expected reason: ${msg.slice(0, 300)}`
+      );
+    }
+  }
+
+  // 3. stackd.enabled with a digest-pinned image.tag and no stackd.image.tag must fail (BLOCKING 2c).
+  try {
+    renderChart("verify-homelab-2c", [
+      "--set",
+      "stackd.enabled=true",
+      "--set",
+      "image.tag=v1.2.3@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      // Deliberately NOT setting stackd.image.tag.
+    ]);
+    fail(
+      "[blocking-2c] stackd.enabled with a digest-pinned image.tag and no stackd.image.tag " +
+        "rendered successfully — it must fail the render instead (the controller would otherwise " +
+        "try to pull scpd's digest under the scp-stackd repository)"
+    );
+  } catch (err) {
+    const msg = String(err);
+    if (!msg.includes("stackd.image.tag")) {
+      fail(
+        `[blocking-2c] the render DID fail as expected, but not with the expected reason: ${msg.slice(0, 300)}`
+      );
+    }
+  }
+
+  return [
+    "  #422 BLOCKING 2 guards: a homelab-shaped render (no bootstrap/stackd keys) is byte-for-byte " +
+      "unchanged (no bootstrap-admin Secret, no api env change, no stackd object); an incomplete " +
+      "existingCredentialSecret configuration fails the render; a digest-pinned image.tag with " +
+      "stackd.enabled and no stackd.image.tag fails the render"
   ];
 }

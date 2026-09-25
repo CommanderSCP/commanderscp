@@ -133,6 +133,20 @@ spec:
             # id and the sha256 of its secret, never the credential itself, which lives only in the
             # controller's own namespace — and, when the chart generated it, gives `scp_operator`
             # its login.
+            {{- if .Values.stackd.existingCredentialSecret }}
+            {{- if or (not .Values.stackd.existingCredentialTokenId) (not .Values.stackd.existingCredentialSha256) }}
+            {{- fail "stackd.existingCredentialSecret is set but stackd.existingCredentialTokenId/existingCredentialSha256 are not — the migrations Job (release namespace) cannot derive them without reading the raw credential Secret in stackd.namespace, which this chart never does under GitOps. Set both (see values.yaml's comment on existingCredentialTokenId)." }}
+            {{- end }}
+            # #422 re-verify, BLOCKING 2a — the migrations Job runs in the RELEASE namespace, a
+            # DIFFERENT namespace than `stackd.existingCredentialSecret` (stackd.namespace), and it
+            # never needs the raw credential — only the id/sha256 pair, exactly like the chart's own
+            # self-generated path below. Plain values, not a Secret: a sha256 hash and a bare id are
+            # not sensitive on their own.
+            - name: SCP_STACKD_CREDENTIAL_TOKEN_ID
+              value: {{ .Values.stackd.existingCredentialTokenId | quote }}
+            - name: SCP_STACKD_CREDENTIAL_SHA256
+              value: {{ .Values.stackd.existingCredentialSha256 | quote }}
+            {{- else }}
             - name: SCP_STACKD_CREDENTIAL_TOKEN_ID
               valueFrom:
                 secretKeyRef:
@@ -143,6 +157,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "commanderscp.fullname" . }}-stackd-install
                   key: credentialSha256
+            {{- end }}
             {{- if eq (include "commanderscp.generatesOperatorDbPassword" .) "true" }}
             - name: SCP_PROVISION_OPERATOR_ROLE
               value: "1"

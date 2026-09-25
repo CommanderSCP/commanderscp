@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, createRouter } from "@tanstack/react-rout
 import { RootLayout } from "./components/layout/RootLayout";
 import { AuthenticatedLayout } from "./components/layout/AuthenticatedLayout";
 import { LoginPage } from "./routes/login";
+import { ChangePasswordPage } from "./routes/change-password";
 import { DashboardPage } from "./routes/dashboard";
 import { OutpostDashboardPage } from "./routes/outpost-dashboard";
 import { useAuth } from "./lib/auth-context";
@@ -30,7 +31,8 @@ import { AssemblyBoardPage, AssemblyDetailLayout } from "./routes/assembly-detai
 import { IdentityPage } from "./routes/identity";
 import { ConnectArgoCdPage } from "./routes/connect-argocd";
 import { ConnectKindPage } from "./routes/connect";
-import { SetupPage } from "./routes/setup";
+import { SetupPage, useOrgIsEmpty } from "./routes/setup";
+import { SkeletonRows } from "./components/ui/skeleton";
 import { AdminDependenciesPage } from "./routes/admin-dependencies";
 import { AdminGovernancePage } from "./routes/admin-governance";
 import { AdminAccessPage } from "./routes/admin-access";
@@ -47,15 +49,40 @@ const loginRoute = createRoute({
   component: LoginPage
 });
 
+// #422 review fix — parented directly under rootRoute (like /login), never under
+// authenticatedLayoutRoute's AppShell: while `mustChangePassword` is set, every OTHER route's API
+// calls 403 (require-auth.ts), so nav chrome pointing at pages that would just show refusals is
+// the wrong shape here. RequireAuth.tsx redirects a signed-in, must-change-password session here.
+const changePasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/change-password",
+  component: ChangePasswordPage
+});
+
 const authenticatedLayoutRoute = createRoute({
   id: "authenticated",
   getParentRoute: () => rootRoute,
   component: AuthenticatedLayout
 });
 
-/** HOME is site-shaped (outpost-ui.md §9.3). See docs/web.md §149. */
+/** HOME is site-shaped (outpost-ui.md §9.3). See docs/web.md §149.
+ *
+ * M29.1 (the front door) — an org with nothing configured (`useOrgIsEmpty`, setup.tsx: zero
+ * execution systems, zero deployment targets, zero components) lands on the setup flow instead of
+ * its dashboard. `/setup` is unchanged and still reachable directly (and linked from navigation,
+ * AppShell.tsx), so this is only which component "/" itself renders — no redirect, no URL change.
+ */
 function HomePage(): React.JSX.Element {
   const { user } = useAuth();
+  const isEmpty = useOrgIsEmpty();
+  if (isEmpty === undefined) {
+    return (
+      <div className="p-6">
+        <SkeletonRows n={4} />
+      </div>
+    );
+  }
+  if (isEmpty) return <SetupPage />;
   return user?.instanceRole === "outpost" ? <OutpostDashboardPage /> : <DashboardPage />;
 }
 
@@ -328,6 +355,7 @@ const registryDetailRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
+  changePasswordRoute,
   authenticatedLayoutRoute.addChildren([
     dashboardRoute,
     deviceRoute,

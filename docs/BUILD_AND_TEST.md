@@ -2190,6 +2190,110 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     - The HQ outpost is declared at install.
     - **DoD:** a scripted install on a fresh kind cluster reaches a logged-in admin session without any `kubectl logs` or
       `kubectl` against SCP's namespace, and deleting the installer's credential-surfacing step turns a test red.
+    - **State (2026-09-25, ADR-0060): BUILT.** Root `README.md` + `docs/quickstart.md`; `scp install`
+      (`packages/cli/src/install-cli.ts`) wrapping `deploy/helm`/`install.sh`/`deploy/compose` for
+      `--role commander|outpost|retrans`, `--profile eval|production`, `--bundle`, `--kube-context`,
+      `--mode kube|compose`, `--with`/`--without <backend>`, `--bootstrap-k3s`, `--set <k=v>`; the
+      chart-generated `<fullname>-bootstrap-admin` Secret (`deploy/helm/templates/secrets-generated.yaml`)
+      the installer reads and prints, mounted only into the api pod
+      (`local-auth.ts`'s `ensureBootstrapAdmin` never logs a password it was handed); `scp install`
+      sets `stackd.enabled` explicitly (the CHART's own bare-`helm-install` default stays `false` —
+      reversed in the #422 review round below); the HQ outpost declared
+      idempotently through the existing `federation outpost declare` path; `apps/web`'s `HomePage`
+      routes an empty org (`isOrgEmpty`/`useOrgIsEmpty`, setup.tsx — zero execution systems, zero
+      deployment targets, zero components) to the setup flow (`/setup` was already linked from
+      navigation); a new `scp whoami` command (`GET /auth/me`), added because the DoD's own language
+      ("reaches a logged-in admin session") had no existing command to confirm it with.
+      How each DoD item is proven, and what the build found:
+      - *reaches a logged-in admin session, no `kubectl logs`, no `kubectl` against SCP's namespace*:
+        proven by a REAL run against a kind cluster (kind v0.32.0, `kindest/node:v1.36.1`, the scpd +
+        `scp-stackd` images built from this branch and loaded locally) during this milestone's own
+        build — recorded in the PR, and reproducible with `scripts/scp-install-kind-drill.sh`. That
+        run found two real bugs neither unit tests nor inspection caught: (1) `federation outpost
+        declare` 400'd — `SCP_FEDERATION_ROLE` (a chart value) never reaches the org's federation-
+        identity ROW, only `POST /federation/init` does, so `scp install` now calls it explicitly
+        before declaring the HQ outpost; (2) deleting the whole bootstrap-admin Secret after login (the
+        literal reading of "remove the Secret after first login") broke the api Deployment's ordinary
+        pod lifecycle — `api.replicaCount` defaults to 2, and ANY later pod start (a rollout restart,
+        a reschedule) hit `CreateContainerConfigError: secret "…-bootstrap-admin" not found`, because
+        `secretKeyRef` resolution is a kubelet-level, container-start-time check on the Secret OBJECT.
+        Fixed by blanking the key's VALUE (`kubectl patch --type=merge`) instead of deleting the
+        object — verified with a real `kubectl rollout restart` against the redacted Secret.
+      - *deleting the installer's credential-surfacing step turns a test red*: `install-cli.test.ts`'s
+        `readBootstrapAdminPassword` MUTATION test — a Secret that never becomes readable makes the
+        function throw (never a silent fallback), proven directly against the exported function
+        rather than the whole `runInstall` orchestration.
+      - `scripts/scp-install-kind-drill.sh` is NOT wired into the merge-gating kind harness (job "4e",
+        `.github/workflows/ci.yml`): that job's suites are Testcontainers-backed and budgeted around
+        ~2 minutes; this drill does a full `helm install` of the whole chart plus all five Standard
+        Stack backends actually installing, which took ~3 minutes end to end when written. Following
+        the existing precedent (`kind-drill.sh`/`ansible-drill.sh`/`airgap-drill.sh` in
+        `.github/workflows/deploy-drills.yml` — nightly + on-demand, never merge-gating, for exactly
+        this "full kind cluster + real helm install" shape), it is wired in there instead, alongside
+        those. **What the DoD does not prove**: the drill is not yet a standing CI gate on every PR —
+        it is nightly/on-demand, the same posture the other three full-cluster drills already have,
+        and its first scheduled/dispatched CI run has not been observed at PR time (only the manual
+        run this milestone's build performed).
+      - *the role's default stack is ready (or its needs shown)*: the kind run's own captured
+        output — `argo-workflows` genuinely reported two `needs` (no RPM builder image, no infra state
+        backend configured — both expected on a fresh eval install with nothing else configured yet),
+        and re-checking a few minutes later (a fresh `scp stack status`, no `kubectl`) showed every
+        backend `ready`.
+      - *an empty org's home route*: `setup.test.tsx`'s `isOrgEmpty` suite, incl. a mutation-style
+        check that any ONE of the three non-empty lists is enough to keep the ordinary dashboard.
+      - **Scope cut, stated rather than deferred silently**: an air-gapped single-node k3s bootstrap
+        was not built (`--bootstrap-k3s` refuses cleanly for `--bundle` installs with the exact reason
+        and what to run instead — the official k3s installer is a network fetch by design). See
+        ADR-0060's Consequences.
+      - **What M29.1 does NOT do**: register an enabled backend as a coordinated `execution-system`
+        (token, TLS trust, both egress layers) — that is M29.2's `afterReady` seam (ADR-0058), a
+        concurrent, separate lane. A freshly `scp install`ed commander's Argo CD is installed and
+        healthy, not yet wired as something SCP coordinates changes through.
+      - **Review round (2026-09-25, #422 adversarial review; ADR-0060 revised).** 2 BLOCKING, 7
+        SHOULD-FIX, 5 NIT, all addressed in this PR:
+        - **BLOCKING**: `--mode compose` never actually reached compose — the built `env` was never
+          passed to `docker compose up`, so every compose install logged a DIFFERENT container's
+          password than the one the installer's own login used, and login always failed
+          (mutation-proven fix). **The default flip reversed**: the chart's OWN `helm install`
+          default goes back to `stackd.enabled: false`; `scp install` sets it explicitly, per the
+          orchestrator's decision (ADR-0060 §3) — a bare-install upgrade under GitOps is never
+          surprised by a controller it never asked for.
+        - **LIVE RISK, fixed pre-emptively**: `lookup` (used to preserve a chart-generated credential
+          across `helm upgrade`s) always returns nothing under `helm template`-only renderers
+          (Argo CD's repo-server) — a `stackd.enabled: true` release tracked by Argo CD with
+          `selfHeal` regenerated `scp_operator`'s database password on every sync, and
+          `provision.ts` refuses to reset a live, already-different password, so the very next
+          migrations Job failed and stayed failed. Fixed with three `existingSecret`-style
+          overrides (`stackd.existingCredentialSecret`, `bootstrap.existingAdminPasswordSecret`,
+          alongside the pre-existing `operatorApi.databaseUrlSecret`) a GitOps operator
+          pre-provisions once — ADR-0060 §2a, `deploy/helm/README.md` § "GitOps / Argo CD" for the
+          exact keys and the bootstrap sequence.
+        - **SHOULD-FIX**: the printed bootstrap password never actually expired — a new
+          `users.must_change_password` column (drizzle/0128) gates every route but
+          `/auth/{me,logout,password}` behind a forced password change on first login (API
+          `POST /auth/password`, SDK `client.auth.changePassword`, CLI `scp passwd`, web
+          `/change-password`) — ADR-0060 §2. `$SCP_API_URL` (an M28-class hole) now only overrides a
+          stored session's base URL when it names the SAME host as the saved one; a different host
+          refuses and asks for an explicit `--base-url`. `--kube-context` is resolved once and
+          pinned (an isolated `KUBECONFIG`) across every `kubectl`/`helm` call in `install.sh` AND
+          `scp-bundled.sh` (which gained the flag), and the target cluster is printed before acting,
+          even under `--yes`. The empty-org home route no longer hangs forever on a lookup error
+          (`anyErrored`) and no longer routes a narrowly scoped caller in a POPULATED org into setup
+          (`ORG_REPRESENTATIVE_ROLE_NAMES`). `redactSecretKey`'s `kubectl patch` failure now throws
+          instead of being silently ignored. A re-run of `scp install` now detects an
+          already-completed install (a blank/absent bootstrap password after a short retry) and
+          skips credential surfacing and the grant instead of throwing.
+        - **NIT**: ADR-0060's own §1/§2 wording contradiction (step 5 said "delete", §2 documents
+          "blank, never delete") fixed; a stale `--kubeconfig` flag mention (that flag does not
+          exist) corrected to reference `$KUBECONFIG`; the kind drill no longer prints the raw
+          bootstrap password into its own (CI-captured) stdout/stderr; fixed-name backend
+          namespaces preventing two `stackd.enabled` releases sharing one cluster is now documented
+          (ADR-0060 Consequences) rather than a silent trap.
+        - **Not independently re-verified this round**: the eval-profile `helm upgrade` failure on
+          the postgres-eval hook's PVC/Service under helm v3.20.2 (noted above, and still tracked
+          here) — SHOULD-FIX 6's re-run fix depends on it but a live fix was not attempted without
+          being able to verify it against a real cluster during this round (concurrent heavy-lock
+          contention with the M29.2 builder).
   - **M29.2 — complete auto-wire, in the controller.** Every enabled backend (Argo CD, Argo Workflows, Argo Events, Gitea)
     is registered as an `execution-system`, with its scoped account, token, TLS trust and both egress layers, in one
     reconcile. No bind command is printed for a human. Also `scp connect gitea`, and the stale Argo Workflows auth-mode

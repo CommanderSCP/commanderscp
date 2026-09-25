@@ -77,6 +77,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# #422/M29.2 note: this script's own --kube-context pinning (built for the now-retired `enable`
+# verb's live kubectl/helm calls) is gone along with `enable` — `render` below is a pure
+# `helm template`, which never touches a live cluster at all, so there is nothing left here for a
+# kube context to apply to. install.sh's own --kube-context pinning (SHOULD-FIX 7) is unaffected;
+# it never routed through this script.
+
 command -v helm >/dev/null 2>&1 || fail "helm not found on PATH"
 [ -f "${CHART_DIR}/Chart.yaml" ] || fail "bundled chart not found at ${CHART_DIR} (pass --chart)"
 

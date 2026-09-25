@@ -5,7 +5,8 @@ import {
   listenTestServer,
   type ListeningTestServer
 } from "./test-support/harness.js";
-import { seedDemoData } from "./seed.js";
+import { seedDemoData, loginAndSeedDemoData } from "./seed.js";
+import { ensureBootstrapAdmin } from "./auth/local-auth.js";
 
 const silentLog = { info: () => undefined, warn: () => undefined };
 
@@ -85,5 +86,90 @@ describe("seedDemoData: idempotent re-runs", () => {
     const afterThirdRun = await snapshot(client);
 
     expect(afterThirdRun).toEqual(afterFirstRun);
+  });
+});
+
+/**
+ * #422 re-verify — CI caught what local runs missed: after `loginAndSeedDemoData` resets the
+ * account and RE-ARMS `mustChangePassword` (BLOCKING 0's fix — the operator's real first login
+ * must still go through a genuine forced change, the same as a non-demo install), EVERY
+ * `scripts/e2e-*.sh` that ALSO logs in as the bootstrap admin afterward (to register services,
+ * poll for the seed landing, etc.) hit a 403 it hadn't before, because it never expected to need a
+ * second forced-change clear of its own. This test proves the exact shape of that gate directly,
+ * without a real compose stack: seed, confirm the account is genuinely re-armed, confirm a login
+ * with the ORIGINAL password still works but a write still 403s, then confirm clearing the flag
+ * (a fresh password, `POST /auth/password` — the fix scripts/lib/clear-forced-password-change.sh
+ * gives every affected script) unblocks it, exactly as scripts/e2e-m0.sh and its siblings now do.
+ */
+describe("loginAndSeedDemoData: leaves mustChangePassword RE-ARMED — every caller after it must clear it again", () => {
+  let server: ListeningTestServer;
+
+  beforeAll(async () => {
+    server = await listenTestServer();
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("MUTATION-CAUGHT: a script that logs in post-seed with the ORIGINAL password can read /auth/me but 403s on a write, until it clears the flag itself", async () => {
+    const orgName = `seed-rearm-${Math.random().toString(36).slice(2)}`;
+    const adminUsername = `admin-${Math.random().toString(36).slice(2)}`;
+    const bootstrap = await ensureBootstrapAdmin(
+      server.deps.db,
+      { orgName, adminUsername },
+      { info: () => undefined, warn: () => undefined }
+    );
+    const oneTimePassword = bootstrap.oneTimePassword;
+    if (!oneTimePassword) throw new Error("expected a fresh one-time password");
+
+    // Exactly what apps/server/src/main.ts hands loginAndSeedDemoData at boot — internalBaseUrl
+    // overridden to the real ephemeral port this test server actually bound to.
+    const config = {
+      ...server.deps.config,
+      internalBaseUrl: server.baseUrl,
+      bootstrapAdminUsername: adminUsername,
+      bootstrapOrgName: orgName
+    };
+    await loginAndSeedDemoData(server.deps.db, config, bootstrap, {
+      info: () => undefined,
+      warn: () => undefined
+    });
+
+    // The ORIGINAL printed password still works for login — seed.ts's own promise.
+    const client = new ScpClient({ baseUrl: server.baseUrl });
+    const login = await client.login(adminUsername, oneTimePassword);
+    expect(login.token).toBeTruthy();
+    const authHeader = { authorization: `Bearer ${login.token}` };
+
+    // But it is RE-ARMED: a write 403s until this session clears it itself.
+    const blocked = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/services",
+      headers: authHeader,
+      payload: { name: "should-be-blocked" }
+    });
+    expect(blocked.statusCode, blocked.body).toBe(403);
+
+    // The fix every scripts/e2e-*.sh now applies: clear it with a fresh password.
+    const cleared = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/password",
+      headers: authHeader,
+      payload: {
+        currentPassword: oneTimePassword,
+        newPassword: `fresh-${Math.random().toString(36).slice(2)}`
+      }
+    });
+    expect(cleared.statusCode, cleared.body).toBe(204);
+
+    // Now unblocked, with the SAME session/token.
+    const nowAllowed = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/services",
+      headers: authHeader,
+      payload: { name: "now-allowed" }
+    });
+    expect(nowAllowed.statusCode, nowAllowed.body).toBe(201);
   });
 });

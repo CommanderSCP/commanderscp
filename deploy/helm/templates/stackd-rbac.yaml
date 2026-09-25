@@ -28,6 +28,14 @@ The rule set is DERIVED from what the chart renders: tools/helm-verify renders e
 fails if any rendered kind is not granted here (sufficiency), and the kind harness runs the
 controller with exactly this ServiceAccount (the grants are not trusted, they are exercised).
 */}}
+{{- /*
+#422 re-verify, item 5 — the SAME hazard postgres-eval.yaml's header comment documents in full:
+Helm's hook execution raw-Create()s on every firing of a hook it never deletes first
+(hook-delete-policy: hook-failed), so a SECOND `helm upgrade` 409s on "already exists" (measured
+live, the same census that found this in secrets-generated.yaml and stackd.yaml too). A Namespace
+has no value to preserve or drift, so skip rendering entirely once it already exists.
+*/}}
+{{- if not (lookup "v1" "Namespace" "" $sns) }}
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -40,6 +48,7 @@ metadata:
     "helm.sh/hook-weight": "-20"
     "helm.sh/hook-delete-policy": hook-failed
 ---
+{{- end }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:

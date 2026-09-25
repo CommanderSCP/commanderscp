@@ -15,6 +15,14 @@ export const LoginResponseSchema = z.object({
 });
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 
+/** `POST /auth/password` (#422 review fix — SHOULD-FIX 3). Retires a local-auth password that
+ *  must be changed (`CurrentUserSchema.mustChangePassword`) — the ONLY door that clears it. */
+export const ChangePasswordRequestSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(12)
+});
+export type ChangePasswordRequest = z.infer<typeof ChangePasswordRequestSchema>;
+
 // Web UI v1 session discovery. See docs/schemas.md §6.
 
 /** The install-time federation role of this instance. See docs/schemas.md §7. */
@@ -30,6 +38,11 @@ export const CurrentUserSchema = z.object({
   username: z.string(),
   subjectObjectId: z.string().uuid(),
   instanceRole: InstanceRoleSchema,
+  /** #422 review fix — true while a printed/handed-in one-time local-auth password still needs to
+   *  be changed (`POST /auth/password`). Every OTHER door 403s with `code:
+   *  "password_change_required"` until it does (require-auth.ts). Always false for an OIDC
+   *  session. */
+  mustChangePassword: z.boolean(),
   /** Every role binding this caller holds anywhere in the org. See docs/schemas.md §8. */
   roleBindings: z.array(
     z.object({

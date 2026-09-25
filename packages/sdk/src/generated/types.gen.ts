@@ -77,6 +77,7 @@ export type GetCurrentUserResponses = {
         username: string;
         subjectObjectId: string;
         instanceRole: 'commander' | 'outpost' | 'retrans';
+        mustChangePassword: boolean;
         roleBindings: Array<{
             roleId: string;
             roleName: string;
@@ -88,6 +89,63 @@ export type GetCurrentUserResponses = {
 };
 
 export type GetCurrentUserResponse = GetCurrentUserResponses[keyof GetCurrentUserResponses];
+
+export type ChangePasswordData = {
+    body: {
+        currentPassword: string;
+        newPassword: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/auth/password';
+};
+
+export type ChangePasswordErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ChangePasswordError = ChangePasswordErrors[keyof ChangePasswordErrors];
+
+export type ChangePasswordResponses = {
+    /**
+     * Success
+     */
+    204: void;
+};
+
+export type ChangePasswordResponse = ChangePasswordResponses[keyof ChangePasswordResponses];
 
 export type LogoutData = {
     body?: never;

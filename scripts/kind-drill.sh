@@ -244,6 +244,16 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
+# #422 review fix (SHOULD-FIX 3/4's forced-password-change gate) -- a bare `helm install` (this
+# drill's own path, no `scp install` in the loop) leaves ensureBootstrapAdmin's
+# mustChangePassword:true set, which requireAuth now enforces against EVERY route but
+# /auth/{me,logout,password} -- including the POST /api/v1/services golden-path call right below.
+# #422 re-verify BLOCKING 0: a same-password "change" is refused server-side now, so this must be
+# a genuinely fresh, different password -- thrown away right after (TOKEN, not ADMIN_PASSWORD, is
+# what the rest of this drill uses).
+source "${ROOT_DIR}/scripts/lib/clear-forced-password-change.sh"
+scp_clear_forced_password_change "${BASE_URL}/api/v1" "$TOKEN" "$ADMIN_PASSWORD" >/dev/null
+
 CREATE_RESPONSE="$(curl -fsS -X POST "${BASE_URL}/api/v1/services" \
   -H "authorization: Bearer ${TOKEN}" -H "content-type: application/json" \
   -d '{"name":"kind-drill-service"}')"

@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import * as argon2 from "argon2";
+import { and, eq } from "drizzle-orm";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import { buildApp } from "./app.js";
 import { loadConfig, type ServerConfig } from "./config.js";
+import type { Db } from "./db/client.js";
 import { createDb, createPool } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import { provisionRuntimeRole, runtimeCredentials } from "./db/provision.js";
-import { ensureBootstrapAdmin, type BootstrapResult } from "./auth/local-auth.js";
+import { sessions, users } from "./db/schema.js";
+import { ensureBootstrapAdmin, randomPassword, type BootstrapResult } from "./auth/local-auth.js";
 
 /** M2 demo seed. See docs/server.md §88. */
 
@@ -109,6 +113,7 @@ export async function seedDemoData(
 
 /** Logs in as the bootstrap admin and seeds demo data. See docs/server.md §91. */
 export async function loginAndSeedDemoData(
+  db: Db,
   config: ServerConfig,
   bootstrap: BootstrapResult,
   log: SeedLogger
@@ -122,7 +127,39 @@ export async function loginAndSeedDemoData(
   }
   const client = new ScpClient({ baseUrl: config.internalBaseUrl });
   await client.login(config.bootstrapAdminUsername, bootstrap.oneTimePassword);
+  // #422 re-verify, BLOCKING 0 — measured live: a same-password "change" (current === new) returned
+  // 204 and cleared mustChangePassword WITHOUT changing the stored hash, so it never actually
+  // retired anything; changeLocalPassword now REFUSES that. The demo-seed path still needs past
+  // require-auth.ts's gate to do its own work (services.create, components.create, …), so it mints
+  // a genuinely fresh, THROWAWAY password, changes to it (a real change, own session preserved —
+  // changeLocalPassword's currentSessionToken param), seeds, and then — because this path's whole
+  // point is that the OPERATOR's ALREADY-PRINTED password (main.ts's own log line, this same
+  // `bootstrap.oneTimePassword` value) must still be what they log in with — resets the account
+  // directly back to that printed password AND re-arms mustChangePassword, so the operator's real
+  // first login goes through the SAME forced-change door a non-demo install would. This is a direct
+  // DB write (never a second `changeLocalPassword` call, which would refuse restoring the same
+  // value it started from) — legitimate here because this whole flow is server-internal bootstrap
+  // automation, not a request a human sent. (SCP_SEED_DEMO is eval/demo-stack-only —
+  // docker-compose.yml — never set on a `scp install --mode kube` deployment.)
+  const scratchPassword = randomPassword();
+  await client.auth.changePassword(bootstrap.oneTimePassword, scratchPassword);
   await seedDemoData(client, config.bootstrapOrgName, log);
+  const admin = await db.query.users.findFirst({
+    where: and(eq(users.orgId, bootstrap.orgId), eq(users.username, config.bootstrapAdminUsername))
+  });
+  if (!admin) throw new Error("seed: bootstrap admin row vanished mid-seed — cannot reset it");
+  const passwordHash = await argon2.hash(bootstrap.oneTimePassword);
+  await db
+    .update(users)
+    .set({ passwordHash, mustChangePassword: true })
+    .where(eq(users.id, admin.id));
+  // Every session this seed run minted (the login above, and whatever the rest of seedDemoData's
+  // client reused) is spent the moment the account resets to its pre-seed state — the operator's
+  // real session starts fresh at their own real login, not by inheriting seed.ts's.
+  await db
+    .update(sessions)
+    .set({ expiresAt: new Date(0) })
+    .where(eq(sessions.userId, admin.id));
 }
 
 /** `pnpm seed` standalone entrypoint. See docs/server.md §92. */
@@ -147,7 +184,7 @@ async function main(): Promise<void> {
   const app = await buildApp({ db, config }, { logger: false });
   await app.listen({ port: config.port, host: config.host });
   try {
-    await loginAndSeedDemoData(config, bootstrap, { info: console.log, warn: console.warn });
+    await loginAndSeedDemoData(db, config, bootstrap, { info: console.log, warn: console.warn });
   } finally {
     await app.close();
   }

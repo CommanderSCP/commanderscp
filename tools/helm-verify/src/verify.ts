@@ -9,7 +9,11 @@ import { parseAllDocuments } from "yaml";
 import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runner-launcher";
 import { opsTemplateShapeProblems } from "@scp/plugin-argo-workflows";
 import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
-import { verifyStackController } from "./stackd.js";
+import {
+  verifyBlocking2Guards,
+  verifyExistingSecretOverrides,
+  verifyStackController
+} from "./stackd.js";
 import { backendEndpoint, egressPolicy, loadRelease, type KubeObject } from "@scp/stackd";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1095,10 +1099,17 @@ function verifySocketInvariantMatrix(): void {
   let grantsChecked = 0;
   let grantProblems = 0;
 
+  // M29.1 (ADR-0058 "the default flip"): stackd now renders BY DEFAULT, and it renders its own
+  // ClusterRole/ClusterRoleBinding/second ServiceAccount+namespace-spanning RoleBindings — real,
+  // reviewed and asserted on their OWN terms in verifyStackdMatrix() below. This matrix is about
+  // the MANAGED RUNNER's identity in isolation (one pod identity, no cluster-scoped grant, no
+  // socket mount); every point here turns stackd back off so it keeps testing exactly that,
+  // the same way it did before stackd existed as a default-on render.
+  const STACKD_OFF = ["--set", "stackd.enabled=false"];
   for (const point of points) {
     let raw: string;
     try {
-      raw = renderRaw(CHART_DIR, "verify-socket", point.args);
+      raw = renderRaw(CHART_DIR, "verify-socket", [...point.args, ...STACKD_OFF]);
     } catch (err) {
       // A REFUSAL IS AN ANSWER, AND THE ONLY ACCEPTABLE ONE FOR A COMBINATION THE CHART GUARDS.
       // Counting it silently would let a guard that started refusing EVERYTHING shrink the matrix
@@ -2588,6 +2599,17 @@ async function main(): Promise<void> {
       "oidc.clientId=scp",
       "--set",
       "oidc.redirectUri=https://scp.example.com/callback",
+      // M29.1 (ADR-0058 "the default flip", ADR-0060): stackd.enabled REFUSES to render together
+      // with federation.serverMtls.enabled (above) — a real, deliberate guard (stackd dials scpd
+      // in-cluster over plain HTTP; serverMtls turns scpd's whole listener into HTTPS). That
+      // combination is not what THIS render is testing — every stackd-specific combination is
+      // exercised in its own dedicated renders in stackd.ts — so it is turned off here, the same
+      // way any other render that wants a DIFFERENT combo than the default carries its own --set.
+      // The bundledExecutor.{argocd,gitea,argoWorkflows} block this render used to also turn on is
+      // gone (M29.2, ADR-0061): those values no longer exist in this chart at all — the stack
+      // controller installs and wires bundled backends now, verified in stackd.ts instead.
+      "--set",
+      "stackd.enabled=false",
       // Executor egress allowlist (Mode A / BYO-coordinate) — one entry exercising BOTH `to` shapes
       // at once (an in-cluster namespaceSelector AND an external ipBlock) plus multiple ports.
       "--set-json",
@@ -3842,6 +3864,29 @@ async function main(): Promise<void> {
     ])
   );
   for (const note of await verifyStackController({
+    repoRoot: path.resolve(__dirname, "../../.."),
+    chartDir: CHART_DIR,
+    bundledChartDir: BUNDLED_CHART_DIR,
+    renderChart,
+    fail
+  })) {
+    console.log(note);
+  }
+
+  // #422 adversarial review (LIVE RISK) — GitOps/Argo CD stability of the existingSecret overrides.
+  for (const note of verifyExistingSecretOverrides({
+    repoRoot: path.resolve(__dirname, "../../.."),
+    chartDir: CHART_DIR,
+    bundledChartDir: BUNDLED_CHART_DIR,
+    renderChart,
+    fail
+  })) {
+    console.log(note);
+  }
+
+  // #422 re-verify BLOCKING 2 — the homelab-shaped baseline stays unchanged, and two incomplete
+  // GitOps configurations fail the render loudly instead of silently mis-provisioning.
+  for (const note of verifyBlocking2Guards({
     repoRoot: path.resolve(__dirname, "../../.."),
     chartDir: CHART_DIR,
     bundledChartDir: BUNDLED_CHART_DIR,

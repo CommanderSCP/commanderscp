@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as argon2 from "argon2";
 import { v7 as uuidv7 } from "uuid";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { orgs, roleBindings, roles, sessions, users } from "../db/schema.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
@@ -17,6 +17,10 @@ export interface AuthContext {
   username: string;
   /** The graph `user` object this account maps to — the RBAC subject (DESIGN.md §7). */
   subjectObjectId: string;
+  /** #422 review fix — true for a local-auth account whose password must be changed before any
+   *  other door opens (checked in require-auth.ts). Always false for an OIDC-only account
+   *  (passwordHash NULL) — see `changeLocalPassword`'s doc for why. */
+  mustChangePassword: boolean;
 }
 
 function hashToken(token: string): string {
@@ -36,7 +40,19 @@ export interface BootstrapResult {
 
 export async function ensureBootstrapAdmin(
   db: Db,
-  opts: { orgName: string; adminUsername: string },
+  opts: {
+    orgName: string;
+    adminUsername: string;
+    /**
+     * M29.1 (the front door): the chart pre-generates this into a Secret the INSTALLER reads and
+     * prints in its own terminal — `kubectl get secret <release>-bootstrap-admin` never has to be
+     * run by a human, and it never has to come from a pod log. When set, this call consumes it
+     * instead of generating one, and never echoes it to `log` (the installer already has it; a
+     * second copy in the pod log would defeat the point of moving it out of the log). Omitted:
+     * unchanged dev/compose behaviour — a fresh random password, logged once at `warn`.
+     */
+    password?: string;
+  },
   log: { info: (msg: string) => void; warn: (msg: string) => void }
 ): Promise<BootstrapResult> {
   const existingOrg = await db.query.orgs.findFirst({ where: eq(orgs.name, opts.orgName) });
@@ -82,22 +98,44 @@ export async function ensureBootstrapAdmin(
     return created.id;
   });
 
-  const oneTimePassword = randomBytes(18).toString("base64url");
+  const wasGenerated = opts.password === undefined;
+  const oneTimePassword = opts.password ?? randomBytes(18).toString("base64url");
   const passwordHash = await argon2.hash(oneTimePassword);
   await db.insert(users).values({
     id: uuidv7(),
     orgId: org.id,
     username: opts.adminUsername,
     passwordHash,
-    objectId: userObjectId
+    objectId: userObjectId,
+    // #422 review fix (SHOULD-FIX 3): a printed/handed-in one-time password is a SHARED secret the
+    // moment it exists (the installer's terminal, an operator's eyes, a chart Secret an operator
+    // could still read) — "shown once" is a claim about where it starts, not about how long it
+    // keeps working. Forcing a change on first login is what actually retires it.
+    mustChangePassword: true
   });
 
-  log.warn(
-    `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}'. ` +
-      `One-time password (not stored, shown once): ${oneTimePassword}`
-  );
+  if (wasGenerated) {
+    log.warn(
+      `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}'. ` +
+        `One-time password (not stored, shown once): ${oneTimePassword}`
+    );
+  } else {
+    // M29.1: the plaintext already has exactly one reader outside this process — the installer,
+    // which read the same chart-generated Secret this password came from and prints it in its own
+    // terminal. Logging it here too would make the pod log a second, uncontrolled copy of the
+    // credential the whole design exists to keep to one reader (docs/adr/0060-front-door.md).
+    log.warn(
+      `local-auth: created bootstrap admin '${opts.adminUsername}' in org '${opts.orgName}' from ` +
+        `a pre-generated credential (SCP_BOOTSTRAP_ADMIN_PASSWORD) — not logged; see the ` +
+        `installer's output.`
+    );
+  }
 
-  return { orgId: org.id, oneTimePassword };
+  // `oneTimePassword` is returned to the caller ONLY when this call itself generated it — a
+  // caller that supplied one already holds it, and BootstrapResult existing to hand back a
+  // never-otherwise-recorded secret is exactly the property M29.1 moves out of the log path, not
+  // something to reopen by returning it here too.
+  return { orgId: org.id, oneTimePassword: wasGenerated ? oneTimePassword : null };
 }
 
 async function createOrg(db: Db, name: string) {
@@ -182,6 +220,74 @@ export async function login(
   return { token: session.token, expiresAt: session.expiresAt, orgName: org.name };
 }
 
+export type ChangePasswordResult =
+  "changed" | "wrong-current-password" | "no-local-password" | "same-as-current";
+
+/**
+ * `POST /auth/password` (#422 review fix — SHOULD-FIX 3). The ONLY door that clears
+ * `mustChangePassword`, so it is also the door that actually retires a printed/handed-in one-time
+ * password rather than leaving it valid forever (require-auth.ts's gate is what makes changing it
+ * MANDATORY before anything else, not merely possible).
+ *
+ * #422 re-verify, BLOCKING 0 — measured live: submitting the SAME string as `currentPassword` and
+ * `newPassword` returned 204 and cleared `mustChangePassword` WITHOUT changing the password at
+ * all, so a printed one-time credential could "satisfy" this door forever and keep working. Now
+ * refused (`same-as-current`) — the only legitimate way to clear the flag is to actually set a
+ * different password. Callers that need automation to proceed past the gate (an installer, a demo
+ * seed, an E2E drill) must generate a FRESH password and use THAT, never re-submit the one they
+ * were handed — every caller in this repo was moved onto `randomPassword()` below for exactly this
+ * reason; see docs/adr/0060-front-door.md §2.
+ *
+ * Changing the password also revokes every OTHER live session for this user (never the one making
+ * THIS call, identified by `currentSessionToken` when the caller authenticated with a session
+ * token rather than a PAT) — a credential leaked before the change (e.g. via `helm get hooks`,
+ * §2's own documented exposure) stops being usable the moment a real password change happens, not
+ * only the one-time password itself.
+ */
+export async function changeLocalPassword(
+  db: Db,
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+  currentSessionToken?: string
+): Promise<ChangePasswordResult> {
+  const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+  // OIDC-only accounts (no local passwordHash) have nothing here to change — same "treat like a
+  // wrong password, not a different code path" posture `login()` already uses for the sibling case.
+  if (!user?.passwordHash) return "no-local-password";
+
+  const valid = await verifyPasswordHashLimited(user.passwordHash, currentPassword);
+  if (!valid) return "wrong-current-password";
+
+  if (newPassword === currentPassword) return "same-as-current";
+
+  const passwordHash = await argon2.hash(newPassword);
+  await db
+    .update(users)
+    .set({ passwordHash, mustChangePassword: false })
+    .where(eq(users.id, userId));
+
+  const keepTokenHash = currentSessionToken ? hashToken(currentSessionToken) : null;
+  await db
+    .update(sessions)
+    .set({ expiresAt: new Date(0) })
+    .where(
+      keepTokenHash
+        ? and(eq(sessions.userId, userId), ne(sessions.tokenHash, keepTokenHash))
+        : eq(sessions.userId, userId)
+    );
+
+  return "changed";
+}
+
+/** Generates a fresh random one-time password — the SAME generator `ensureBootstrapAdmin`'s own
+ *  fallback already used, exported so every caller that must clear `mustChangePassword` (an
+ *  installer, a demo seed, a drill) mints a NEW password instead of re-submitting the one it was
+ *  handed, which `changeLocalPassword` above now refuses (`same-as-current`). */
+export function randomPassword(): string {
+  return randomBytes(18).toString("base64url");
+}
+
 /** Resolves a `users.id` to its full auth context. See docs/auth.md §15. */
 export async function resolveAuthContext(db: Db, userId: string): Promise<AuthContext | null> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -194,7 +300,8 @@ export async function resolveAuthContext(db: Db, userId: string): Promise<AuthCo
     orgId: org.id,
     orgName: org.name,
     username: user.username,
-    subjectObjectId: user.objectId
+    subjectObjectId: user.objectId,
+    mustChangePassword: user.mustChangePassword
   };
 }
 

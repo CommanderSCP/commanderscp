@@ -71,6 +71,27 @@ spec:
               value: {{ include "commanderscp.apiRole" . | quote }}
             {{- include "commanderscp.commonEnv" . | nindent 12 }}
             {{- include "commanderscp.runtimeDbEnv" . | nindent 12 }}
+            {{- /* M29.1 (the front door): ONLY the api pod gets this — it's the one that can create
+                   the bootstrap admin (background-work.ts's createsBootstrapAdmin). Not in
+                   commonEnv: the worker Deployment and the migrations Job never need it, and a
+                   plaintext one-time password is worth keeping off every pod template that doesn't.
+                   See secrets-generated.yaml for the Secret and docs/adr/0060-front-door.md.
+                   #422 re-verify BLOCKING 2: gated the SAME way the Secret itself is — a bare
+                   `helm install`/upgrade with neither `bootstrap.generate` nor
+                   `bootstrap.existingAdminPasswordSecret` set gets NO env var pointing at a Secret
+                   that (with `generate` false) would not exist; `ensureBootstrapAdmin`'s own
+                   self-generated-password + log.warn fallback runs unchanged, exactly the
+                   pre-M29.1 behavior. */}}
+            {{- if or .Values.bootstrap.generate .Values.bootstrap.existingAdminPasswordSecret }}
+            - name: SCP_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  # #422 review (LIVE RISK): `bootstrap.existingAdminPasswordSecret`, when set,
+                  # points here instead of the chart-generated Secret — see
+                  # secrets-generated.yaml's header comment.
+                  name: {{ .Values.bootstrap.existingAdminPasswordSecret | default (printf "%s-bootstrap-admin" (include "commanderscp.fullname" .)) }}
+                  key: {{ .Values.bootstrap.existingAdminPasswordSecretKey | default "password" }}
+            {{- end }}
           # PRE-STOP DELAY — the difference between "graceful shutdown" and "zero downtime".
           #
           # main.ts already handles SIGTERM with `app.close()`, which drains in-flight requests. That
