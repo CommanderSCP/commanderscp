@@ -172,8 +172,12 @@ bundledExecutor:
       #   gitToken          — read access to the source repo (omit for a public repo)
       #   registryUsername  — registry push identity
       #   registryPassword  — registry push token (for GHCR: a PAT with `packages:write`)
-      # NOT created by this chart: minting a forge credential is an operator act, and a chart that
-      # generated one would either be wrong or would need the forge's own credentials to do it.
+      #   registryHost      — the one registry host (host[:port]) the token may be presented to;
+      #                       a build whose destination is any other host is refused (M29.5)
+      # NOT created by this chart, and never by hand (M29.5, ADR-0062): each key is ENTERED THROUGH
+      # SCP (`scp stack credential set argo-workflows scp-build-registry <key>`, or Admin › Stack ›
+      # Credentials), sealed to the stack controller, and written here by the controller. SCP keeps
+      # no copy. The name and keys are a fixed catalog (@scp/schemas STACK_CREDENTIAL_CATALOG).
       credentialsSecret: scp-build-registry
       # The identity catalog BUILD PODS run as — bound to no Role, token not mounted. Separate from
       # `scpAccount` on purpose: that one can create and terminate workflows, and a build pod runs
@@ -188,7 +192,9 @@ bundledExecutor:
         builderImage: moby/buildkit:v0.33.0-rootless # BuildKit, rootless (Apache-2.0)
         gitImage: alpine/git:2.47.2 # git (MIT)
         # The forge the source repo lives on. `sourceRepo` arrives as `owner/name`, so the host is
-        # configuration rather than something to parse out of it.
+        # configuration rather than something to parse out of it. A bare host is fetched over
+        # https; a value with a scheme is used as given (M29.5) — the bundled Gitea is
+        # `http://scp-gitea-http.scp-gitea.svc:3000`, plain HTTP inside the cluster.
         sourceHost: github.com
         # The NON-ROOT uid the builder runs as, and the fsGroup its emptyDirs are created under.
         # `moby/buildkit:*-rootless` ships user `user` (1000) with the subuid/subgid ranges
@@ -272,10 +278,14 @@ bundledExecutor:
         #
         # Each Secret is mounted as environment variables (every key becomes one: AWS_ACCESS_KEY_ID,
         # ARM_CLIENT_SECRET, PG_CONN_STR, …), OPTIONAL at mount, NOT created by this chart and never
-        # read by SCP — the operator provisions both in this namespace, exactly as the build
-        # template's push Secret (charter principle 1). Each ServiceAccount is separate from
-        # `buildServiceAccount` ON PURPOSE: an operator using workload identity (IRSA, GKE WI) binds
-        # cloud authority to it, and a build pod running a tenant's Dockerfile must never inherit it.
+        # read by SCP. Its keys are ENTERED THROUGH SCP and written here by the stack controller
+        # (M29.5, ADR-0062) — from a FIXED set of key names, because a free key would become any
+        # environment variable (LD_PRELOAD, TF_CLI_CONFIG_FILE) of a pod running a repository's
+        # code. Workload identity is preferred: `scp stack workload-identity set argo-workflows
+        # scp-infra-plan --provider aws-irsa|gke-workload-identity|azure-workload-identity …` makes
+        # the controller annotate the ServiceAccount, and nothing needs entering. Each ServiceAccount
+        # is separate from `buildServiceAccount` ON PURPOSE: cloud authority is bound to it, and a
+        # build pod running a tenant's Dockerfile must never inherit it.
         # The chart grants each only the executor's workflowtaskresults floor; a `kubernetes` state
         # backend needs the operator to add a Role for its Secrets/Leases.
         plan:

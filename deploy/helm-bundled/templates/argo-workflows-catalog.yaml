@@ -190,11 +190,12 @@ spec:
               set -eu
               repo="$0"; commit="$1"
               : "${GIT_TOKEN:=}"
-              host="{{ $c.buildImage.sourceHost }}"
+              base="{{ include "commanderscp.sourceBaseUrl" $c.buildImage.sourceHost }}"
+              scheme="${base%%://*}"; authority="${base#*://}"
               if [ -n "$GIT_TOKEN" ]; then
-                remote="https://x-access-token:${GIT_TOKEN}@${host}/${repo}.git"
+                remote="${scheme}://x-access-token:${GIT_TOKEN}@${authority}/${repo}.git"
               else
-                remote="https://${host}/${repo}.git"
+                remote="${base}/${repo}.git"
               fi
               mkdir -p /work/src && cd /work/src
               git init -q .
@@ -263,6 +264,23 @@ spec:
               echo "template of your own if it does not build from a Dockerfile at all." >&2
               exit 2
             }
+            # THE PUSH CREDENTIAL IS BOUND TO ONE HOST (M29.5, ADR-0062). The destination is
+            # assembled by SCP from a registry object an organization writes, so without a binding
+            # a registry re-pointed at another host would be handed this Secret's token. With
+            # `registryHost` set (entered through SCP with the token), any other host is refused
+            # BEFORE the credential is written anywhere.
+            if [ -n "${REGISTRY_HOST:-}" ] && [ "$host" != "$REGISTRY_HOST" ]; then
+              echo "the push credential in {{ $c.credentialsSecret }} is bound to ${REGISTRY_HOST}, and this" >&2
+              echo "build's destination is ${host} — refusing to present it there" >&2
+              exit 2
+            fi
+            [ -n "${REGISTRY_HOST:-}" ] || echo "warning: the push credential in {{ $c.credentialsSecret }} is not bound to a registry host (set registryHost through SCP)" >&2
+            # An in-cluster Service (the bundled Gitea) is plain HTTP behind its NetworkPolicy, the
+            # way SCP itself reaches it; every other host is pushed to over TLS only.
+            insecure=""
+            case "$host" in
+              *.svc|*.svc:*|*.svc.cluster.local|*.svc.cluster.local:*) insecure=",registry.insecure=true" ;;
+            esac
             if [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
               # buildkit reads registry credentials from DOCKER_CONFIG; there is no `login` verb.
               # Written with printf rather than a heredoc so the password never becomes a token
@@ -286,7 +304,7 @@ spec:
               --local context=/work/src \
               --local dockerfile=/work/src \
               --opt filename="$dockerfile" \
-              --output type=image,name="$tag",push=true
+              --output "type=image,name=${tag},push=true${insecure}"
             echo "pushed $tag"
           - "{{`{{inputs.parameters.imageDestination}}`}}"
           - "{{`{{inputs.parameters.sourceCommit}}`}}"
@@ -309,6 +327,12 @@ spec:
               secretKeyRef:
                 name: {{ $c.credentialsSecret }}
                 key: registryPassword
+                optional: true
+          - name: REGISTRY_HOST
+            valueFrom:
+              secretKeyRef:
+                name: {{ $c.credentialsSecret }}
+                key: registryHost
                 optional: true
         resources:
           {{- toYaml $c.buildImage.resources.build | nindent 10 }}
@@ -435,11 +459,12 @@ spec:
               set -eu
               repo="$0"; commit="$1"
               : "${GIT_TOKEN:=}"
-              host="{{ $c.buildImage.sourceHost }}"
+              base="{{ include "commanderscp.sourceBaseUrl" $c.buildImage.sourceHost }}"
+              scheme="${base%%://*}"; authority="${base#*://}"
               if [ -n "$GIT_TOKEN" ]; then
-                remote="https://x-access-token:${GIT_TOKEN}@${host}/${repo}.git"
+                remote="${scheme}://x-access-token:${GIT_TOKEN}@${authority}/${repo}.git"
               else
-                remote="https://${host}/${repo}.git"
+                remote="${base}/${repo}.git"
               fi
               mkdir -p /work/src && cd /work/src
               git init -q .
@@ -503,6 +528,13 @@ spec:
               secretKeyRef:
                 name: {{ $c.credentialsSecret }}
                 key: registryPassword
+                optional: true
+          # M29.5: the host the credential is bound to (build-rpm.sh refuses any other).
+          - name: REGISTRY_HOST
+            valueFrom:
+              secretKeyRef:
+                name: {{ $c.credentialsSecret }}
+                key: registryHost
                 optional: true
         resources:
           {{- toYaml $c.buildRpm.resources.build | nindent 10 }}
@@ -743,7 +775,7 @@ spec:
           - name: SCP_OUTPUT_DIR
             value: /work/out
           - name: SCP_SOURCE_BASE_URL
-            value: https://{{ $c.buildImage.sourceHost }}
+            value: {{ include "commanderscp.sourceBaseUrl" $c.buildImage.sourceHost | quote }}
           - name: SCP_STATE_BACKEND_TYPE
             value: {{ $i.stateBackend.type | quote }}
           - name: SCP_BACKEND_CONFIG_FILE

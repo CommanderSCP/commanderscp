@@ -54,3 +54,17 @@ self-consistency check, NOT SCP runtime authority.
 {{- end -}}
 {{- $role -}}
 {{- end -}}
+
+{{/*
+The base URL a source repository is fetched from: `buildImage.sourceHost` as given when it names a
+scheme (`http://scp-gitea-http.scp-gitea.svc:3000` — the bundled Gitea serves plain HTTP inside
+the cluster), else https:// in front of the bare host (`github.com`). M29.5.
+*/}}
+{{- define "commanderscp.sourceBaseUrl" -}}
+{{- $h := . -}}
+{{- if or (hasPrefix "http://" $h) (hasPrefix "https://" $h) -}}
+{{- trimSuffix "/" $h -}}
+{{- else -}}
+https://{{ $h }}
+{{- end -}}
+{{- end }}
