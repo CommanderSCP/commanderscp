@@ -64,7 +64,16 @@ ever generated, so NEITHER changes on a `lookup`-blind render. See deploy/helm/R
 {{- if and $existingInstall (hasKey $existingInstall.data "operatorDatabasePassword") }}
 {{- $operatorDbPassword = index $existingInstall.data "operatorDatabasePassword" | b64dec }}
 {{- end }}
-{{- if not $usesExistingCredential }}
+{{- /*
+#422 re-verify, item 5 — the SAME hazard postgres-eval.yaml's header comment documents in full:
+Helm's hook execution raw-Create()s on every firing of a hook it never deletes first
+(hook-delete-policy: hook-failed), so a SECOND `helm upgrade` 409s on "already exists" (measured
+live, the same census that found this in secrets-generated.yaml too). Skip rendering entirely once
+`$existing` is found — this credential is read ONLY by the long-running controller Deployment, so
+(same reasoning as the bootstrap-admin Secret) it must never be touched again once created, not
+even to churn its Kubernetes object identity via delete-then-recreate.
+*/}}
+{{- if and (not $usesExistingCredential) (not $existing) }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -81,6 +90,16 @@ stringData:
   credential: {{ $credential | quote }}
 ---
 {{- end }}
+{{- /*
+`-install`, unlike the credential Secret above, is DELIBERATELY re-created on every upgrade
+(before-hook-creation, not hook-failed) — ADR-0058's rotation path depends on it: the migrations
+Job reads THIS Secret's credentialTokenId/Sha256 to detect and revoke a rotated credential by its
+OLD id, so it must always reflect whatever the credential Secret CURRENTLY holds, not what it held
+the first time this rendered. Safe to briefly delete-then-recreate (the transient-absence risk
+`before-hook-creation` carries for a Secret a LONG-RUNNING pod mounts) because nothing long-running
+mounts THIS Secret — only the migrations Job, a fresh pod created on this SAME upgrade, after this
+hook fires.
+*/}}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -90,7 +109,7 @@ metadata:
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-10"
-    "helm.sh/hook-delete-policy": hook-failed
+    "helm.sh/hook-delete-policy": before-hook-creation
 type: Opaque
 stringData:
   {{- if $usesExistingCredential }}
