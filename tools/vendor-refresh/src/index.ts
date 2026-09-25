@@ -44,7 +44,7 @@ export {
   type PlanVendorRefreshOptions
 } from "./plan.js";
 export { createSkopeoDigestResolver, SkopeoUnavailableError } from "./digest.js";
-export { realVendorRefreshIO } from "./io.js";
+export { fetchGiteaChartOverHelm, realVendorRefreshIO } from "./io.js";
 export { splitAtDocumentBoundaries, splitIntoNamedParts, MAX_PART_BYTES } from "./split.js";
 export { classifyRevendorDiff, type DiffClass, type DiffClassification } from "./classify.js";
 export { buildSandboxIO, type SandboxInput } from "./sandbox-io.js";

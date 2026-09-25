@@ -21,7 +21,6 @@
  * KEYLESS per-image cosign signatures with a documented identity; the other four are logged as an
  * explicit, named gap rather than silently treated as verified — see {@link BACKEND_VERIFICATION}).
  */
-import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PluginContext } from "@scp/plugin-api";
@@ -44,8 +43,7 @@ import {
   argoprojManifestUrlBySha,
   BUNDLE_IMAGES_TS_PATH,
   createSkopeoDigestResolver,
-  GITEA_CHART_REPO_NAME,
-  GITEA_CHART_REPO_URL,
+  fetchGiteaChartOverHelm,
   GITEA_IMAGE_COORDINATE,
   IMAGES_LIST_PATH,
   isBackendName,
@@ -86,43 +84,13 @@ export interface RevendorFetchDeps {
   fetchGiteaChart: (chartVersion: string, destDir: string) => Promise<string>;
 }
 
-function resolveHelmBin(): string {
-  return process.env.SCP_HELM_BIN && process.env.SCP_HELM_BIN.trim() !== ""
-    ? process.env.SCP_HELM_BIN
-    : "helm";
-}
-
-let giteaRepoAdded = false;
-
-async function realFetchGiteaChart(chartVersion: string, destDir: string): Promise<string> {
-  const helm = resolveHelmBin();
-  if (!giteaRepoAdded) {
-    execFileSync(helm, [
-      "repo",
-      "add",
-      GITEA_CHART_REPO_NAME,
-      GITEA_CHART_REPO_URL,
-      "--force-update"
-    ]);
-    execFileSync(helm, ["repo", "update", GITEA_CHART_REPO_NAME]);
-    giteaRepoAdded = true;
-  }
-  execFileSync(helm, [
-    "pull",
-    `${GITEA_CHART_REPO_NAME}/gitea`,
-    "--version",
-    chartVersion,
-    "--untar",
-    "--untardir",
-    destDir
-  ]);
-  return join(destDir, "gitea");
-}
-
 export const DEFAULT_REVENDOR_FETCH_DEPS: RevendorFetchDeps = {
   resolveImageDigest: createSkopeoDigestResolver(),
   verifyKeylessSignature: createKeylessImageVerifier(),
-  fetchGiteaChart: realFetchGiteaChart
+  // `@scp/vendor-refresh`'s `fetchGiteaChartOverHelm`, NOT a local `execFileSync` call — see that
+  // function's own doc comment: this package may not import `node:child_process` at all
+  // (`packages/runner-launcher/src/no-docker-on-kubernetes.test.ts`'s M23.6 clause-1 census).
+  fetchGiteaChart: fetchGiteaChartOverHelm
 };
 
 /** Per-backend image-verification coverage, measured against each project's OWN published release

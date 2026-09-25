@@ -40,6 +40,38 @@ async function runHelmTemplateForReal(args: readonly string[]): Promise<string> 
   return execFileSync("helm", [...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
+/**
+ * FETCH (never template) the Gitea chart via `helm pull --untar` — the ORCHESTRATOR's own scoped
+ * use of helm (ADR-0059): network-reaching, but never parses or templates anything itself. Lives
+ * here, in `@scp/vendor-refresh`, rather than in `packages/plugins/managed-dep`, on purpose —
+ * `packages/runner-launcher/src/no-docker-on-kubernetes.test.ts`'s M23.6 clause-1 census forbids
+ * `managed-iac`/`managed-dep`/`managed-scan` from importing `node:child_process` AT ALL (every
+ * subprocess spawn must go through the ledgered `spawnRunnerProcess`, for CONTAINER launches only);
+ * this package is not one of the three, and `io.ts` already owns the one other real `helm` spawn
+ * (`runHelmTemplateForReal`, above) for the identical reason — one file, one real toolchain
+ * boundary, never re-implemented at each call site.
+ */
+export async function fetchGiteaChartOverHelm(
+  chartVersion: string,
+  destDir: string
+): Promise<string> {
+  ensureGiteaRepo();
+  execFileSync(
+    "helm",
+    [
+      "pull",
+      `${GITEA_CHART_REPO_NAME}/gitea`,
+      "--version",
+      chartVersion,
+      "--untar",
+      "--untardir",
+      destDir
+    ],
+    { stdio: "inherit" }
+  );
+  return `${destDir}/gitea`;
+}
+
 /** The real IO. Every field reaches outside the process — the network, the pinned skopeo, `helm`. */
 export const realVendorRefreshIO: VendorRefreshIO = {
   fetchText: fetchTextOverHttp,
