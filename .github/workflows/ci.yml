@@ -677,7 +677,7 @@ jobs:
           # to skip precisely because this job runs `blackhole` below: a skip that ever turned out
           # wrong fails the consumer loudly at pull time instead of quietly reopening the
           # live-upstream hole — see ci-mirror.sh's comment.
-          SCP_SEED_SKIP: kindest/node node quay.io/argoproj/argo-events
+          SCP_SEED_SKIP: kindest/node node quay.io/argoproj/argo-events quay.io/argoproj/argocd ghcr.io/dexidp/dex valkey/valkey quay.io/argoproj/argocli quay.io/argoproj/workflow-controller quay.io/argoproj/argoexec
         run: scripts/ci-mirror.sh seed
       - name: Install the PINNED cosign (the same binary the scp image ships)
         # PINNED, not `sigstore/cosign-installer@v3` (M17.3 E1). Two reasons the unpinned network
@@ -863,12 +863,16 @@ jobs:
       # upgrade falls back — is this step. It imports @scp/stackd/@scp/sdk from dist, so build first.
       - name: Build what the stack controller suite imports
         run: pnpm exec turbo run build --filter=@scp/server...
-      - name: Drive the stack controller against the real API server (M29.4)
+      # M29.2 (ADR-0060) — AND ITS WIRING AGAINST REAL BACKENDS: the controller installs a real
+      # Argo CD, Argo Workflows, Argo Events and Gitea (images from the harness registry, seeded
+      # above) and wires each into scpd; a discovery run lists Argo CD's Applications, a trivial
+      # workflow is submitted through SCP and observed, and a private Gitea repository is read —
+      # with the token, CA, endpoint and egress the controller handed over. The plugin dials
+      # in-cluster Service names, so both suites run INSIDE the kind node's network namespace
+      # (`in-cluster-net`: CoreDNS, the node's kube-proxy rules; Testcontainers reaches the host's
+      # daemon through the kind network gateway, and sets RYUK off for the blackhole's reason).
+      - name: Drive the stack controller and its wiring against the real API server and backends (M29.4, M29.2)
         run: pnpm --filter @scp/server test:kind
-        env:
-          # Same reason as job 5's: the reaper sidecar is an unmirrored Docker Hub pull, and the
-          # blackhole above would (correctly) fail it.
-          TESTCONTAINERS_RYUK_DISABLED: "true"
       - name: Tear the cluster down
         if: always()
         run: scripts/kind-runner-harness.sh down

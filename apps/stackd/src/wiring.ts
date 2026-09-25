@@ -633,12 +633,16 @@ export async function unwireBackend(
 ): Promise<void> {
   if (!isWireable(backend) || !deps.wiring) return;
   await deps.api.deleteWiring(backend);
-  await deps.kube.delete({
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    name: egressPolicyName(backend),
-    namespace: deps.scpNamespace
-  });
+  // Only a backend SCP calls ever had an egress policy — and only those three names are the
+  // controller's to delete in SCP's namespace (stackd-rbac.yaml; measured: a 403 otherwise).
+  if (SERVICE[backend]) {
+    await deps.kube.delete({
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      name: egressPolicyName(backend),
+      namespace: deps.scpNamespace
+    });
+  }
   if (ctx.wasWired && (backend === "argocd" || backend === "gitea")) {
     // Bounded: a backend that is already unhealthy must not hold a disable up for minutes.
     const quick: ControllerDeps = {

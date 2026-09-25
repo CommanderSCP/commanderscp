@@ -61,6 +61,8 @@ const OPERATOR_TOKEN = "m29-4-kind-operator-token";
 
 interface Harness {
   apiBase: string;
+  /** M29.2: the API server as seen from inside the kind node's network namespace. */
+  netnsApiBase?: string;
   caFile: string;
   /** The runner namespace and the runner ServiceAccount's token (the chart's runner Role). */
   namespace: string;
@@ -71,6 +73,11 @@ interface Harness {
 }
 
 const STACKD_SA = "scp-commanderscp-stackd";
+
+/** CI runs the server's kind suites inside the kind node's network namespace (M29.2 — the wiring
+ *  suite dials in-cluster Services), where the API server is the node's own :6443. */
+const apiBaseOf = (h: Harness): string =>
+  process.env.SCP_KIND_IN_CLUSTER_NET === "1" && h.netnsApiBase ? h.netnsApiBase : h.apiBase;
 
 const EVENTS_NS = "scp-argo-events";
 
@@ -132,7 +139,10 @@ describe("M29.4 the stack controller installs, removes and falls back on a real 
         intervalMs: 2_000,
         readyTimeoutMs: opts.readyTimeoutMs,
         resyncMs: 600_000,
-        scpPodLabels: { "app.kubernetes.io/name": "commanderscp", "app.kubernetes.io/instance": "scp" }
+        scpPodLabels: {
+          "app.kubernetes.io/name": "commanderscp",
+          "app.kubernetes.io/instance": "scp"
+        }
       },
       transport,
       {
@@ -177,7 +187,7 @@ describe("M29.4 the stack controller installs, removes and falls back on a real 
     const ca = await readFile(harness.caFile);
     // THE CHART'S identity: a token for the ServiceAccount stackd-rbac.yaml created.
     transport = httpsTransport({
-      apiBase: harness.apiBase,
+      apiBase: apiBaseOf(harness),
       ca,
       readToken: async () => harness.stackdToken
     });
@@ -269,7 +279,7 @@ describe("M29.4 the stack controller installs, removes and falls back on a real 
   it("B1: the runner's identity cannot run a pod as the controller, nor read its secrets", async () => {
     const ca = await readFile(harness.caFile);
     const runner = httpsTransport({
-      apiBase: harness.apiBase,
+      apiBase: apiBaseOf(harness),
       ca,
       readToken: async () => harness.token
     });
