@@ -219,4 +219,71 @@ describe("classifyRevendorDiff — requires-review", () => {
     expect(result.class).toBe("requires-review");
     expect(result.reasons.some((r) => r.includes("privileged"))).toBe(true);
   });
+
+  /**
+   * PROBE P3 (2026-09-25 re-review, finding 1, first half) — MADE PERMANENT. A ClusterRoleBinding
+   * granting cluster-admin, with a DUPLICATE `name:` mapping key, alongside a real legitimate image
+   * bump elsewhere in the manifest. The `yaml` library's default `uniqueKeys: true` reports the
+   * duplicate key as a PARSE ERROR (`doc.errors`, not `doc.warnings` — measured), and this
+   * classifier used to skip any document it could not parse rather than treat that as suspicious —
+   * so this exact manifest classified `image-only` and would have auto-merged. Helm's own, far more
+   * permissive, YAML parser accepts the document (last key wins) and applies it for real.
+   */
+  it("PROBE P3 (permanent): a ClusterRoleBinding with a duplicate mapping key forces requires-review, never a silent skip", () => {
+    const maliciousBinding = [
+      "apiVersion: rbac.authorization.k8s.io/v1",
+      "kind: ClusterRoleBinding",
+      "metadata:",
+      "  name: argocd-telemetry",
+      "  name: argocd-telemetry", // the duplicate key — a real YAML parse error under uniqueKeys
+      "roleRef:",
+      "  apiGroup: rbac.authorization.k8s.io",
+      "  kind: ClusterRole",
+      "  name: cluster-admin",
+      "subjects:",
+      "  - kind: ServiceAccount",
+      "    name: default",
+      "    namespace: kube-system"
+    ].join("\n");
+    const oldManifest = OLD_DEPLOYMENT;
+    const newManifest = `${NEW_DEPLOYMENT}\n---\n${maliciousBinding}\n`;
+    expect(newManifest).not.toBe(oldManifest);
+    const result = classifyRevendorDiff(oldManifest, newManifest, TRACKED);
+    expect(result.class).toBe("requires-review");
+    expect(result.reasons.some((r) => r.includes("FAILED TO PARSE"))).toBe(true);
+  });
+
+  /**
+   * PROBE P3 (second half) — MADE PERMANENT. TWO well-formed documents in the SAME manifest
+   * claiming the SAME kind/namespace/name: a wildcard ClusterRole placed BEFORE a benign
+   * same-named copy. `parseObjects`'s `Map` used to let the second (benign-looking) one silently
+   * overwrite the first (wildcard) one, so the classifier's view of "this object" never included
+   * the malicious bytes at all — while both documents still ship in the pushed manifest.
+   */
+  it("PROBE P3 (permanent): two documents claiming the same object identity force requires-review, never last-write-wins", () => {
+    const wildcardThenBenign = [
+      "apiVersion: rbac.authorization.k8s.io/v1",
+      "kind: ClusterRole",
+      "metadata:",
+      "  name: argocd-application-controller",
+      "rules:",
+      "  - apiGroups: ['*']",
+      "    resources: ['*']",
+      "    verbs: ['*']",
+      "---",
+      "apiVersion: rbac.authorization.k8s.io/v1",
+      "kind: ClusterRole",
+      "metadata:",
+      "  name: argocd-application-controller",
+      "rules:",
+      "  - apiGroups: ['']",
+      "    resources: ['pods']",
+      "    verbs: ['get']"
+    ].join("\n");
+    const oldManifest = OLD_DEPLOYMENT;
+    const newManifest = `${NEW_DEPLOYMENT}\n---\n${wildcardThenBenign}\n`;
+    const result = classifyRevendorDiff(oldManifest, newManifest, TRACKED);
+    expect(result.class).toBe("requires-review");
+    expect(result.reasons.some((r) => r.includes("DUPLICATE OBJECT IDENTITY"))).toBe(true);
+  });
 });

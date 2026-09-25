@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ScopedHttpRequest, ScopedHttpResponse } from "@scp/plugin-api";
 import type { ResolveRunnerLauncher, RunnerSpec } from "@scp/runner-launcher";
 import { runSandbox, type FullSandboxInput } from "@scp/vendor-refresh";
@@ -72,18 +73,33 @@ const OLD_IMAGES_LIST = "# no argocd line today\n";
 const FIXTURE_DIGEST = `sha256:${"7".repeat(64)}`;
 const FIXTURE_SHA = "a".repeat(40);
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+/** The SAME fixture chart `@scp/vendor-refresh`'s own `gitea-plan.test.ts`/`sandbox-main.test.ts`
+ *  use — real `Chart.yaml` (`appVersion: "1.26.1-fixture"`), real templates, rendered with the real
+ *  `helm` binary. Used for finding 4's "test a real gitea bump end to end against a fixture." */
+const FIXTURE_GITEA_CHART = resolve(
+  __dirname,
+  "../../../../tools/vendor-refresh/src/test-support/fixtures/gitea-chart"
+);
+
 /** {@link RevendorFetchDeps} — the orchestrator's injectable network/subprocess seam. `resolveImageDigest`
  *  and `verifyKeylessSignature` stand in for skopeo/cosign; the manifest FETCH itself goes through
  *  `ctx.http` (faked by {@link revendorGithubHandler} below), not this object — matching the real
  *  split (`resolveTagCommitSha`/`fetchArgoprojManifest` are `ctx.http` calls; only digest resolution
  *  and cosign verification are subprocess-shaped, same as every other skopeo/cosign call in this
- *  codebase). */
+ *  codebase). `fetchGiteaChart` copies the REAL fixture chart to `destDir/gitea`, matching
+ *  `fetchGiteaChartOverHelm`'s own `helm pull --untar --untardir <destDir>` convention (which
+ *  extracts to `<destDir>/<chartName>`) — so gitea's orchestrator-side `Chart.yaml` read (finding 4)
+ *  exercises the real file, not a stub. */
 function fakeRevendorFetchDeps(): RevendorFetchDeps {
   return {
     resolveImageDigest: async () => FIXTURE_DIGEST,
     verifyKeylessSignature: () => ({ status: "verified", detail: "fixture: always verified" }),
-    fetchGiteaChart: async () => {
-      throw new Error("not used by the argocd backend");
+    fetchGiteaChart: async (_chartVersion: string, destDir: string) => {
+      const dest = join(destDir, "gitea");
+      await mkdir(destDir, { recursive: true });
+      await cp(FIXTURE_GITEA_CHART, dest, { recursive: true });
+      return dest;
     }
   };
 }
@@ -95,8 +111,17 @@ function fakeSandboxLauncher(): ResolveRunnerLauncher {
   return () => ({
     async run(spec: RunnerSpec) {
       const inDir = spec.copyIn[0]!.hostDir;
+      const containerPath = spec.copyIn[0]!.containerPath; // "/work/in", by convention
       const raw = await readFile(join(inDir, "input.json"), "utf8");
       const input = JSON.parse(raw) as FullSandboxInput;
+      // `chartDir` (gitea only) names a CONTAINER path (`/work/in/chart-src/gitea`) — a real
+      // container resolves it via the SAME `docker cp` that put `input.json` there; this fake
+      // launcher has no container, so it maps the container path back to the host path `docker cp`
+      // would have used, the one place a real container and this in-process stand-in actually
+      // differ.
+      if (input.chartDir !== undefined && input.chartDir.startsWith(containerPath)) {
+        input.chartDir = join(inDir, input.chartDir.slice(containerPath.length));
+      }
       const output = await runSandbox(input);
       if (spec.copyOut) {
         await mkdir(spec.copyOut.hostDir, { recursive: true });
@@ -420,6 +445,139 @@ describe("trigger() dispatches 're-vendor' through the real managed-dep path (E2
       calls.some((c) => c.method === "PUT" && c.url.includes("/pulls/") && c.url.endsWith("/merge"))
     ).toBe(false);
   });
+});
+
+/** GITEA END TO END (finding 4, 2026-09-25 re-review): "the downgrade guard compares the chart
+ *  version against the image tag, which lets 12.6.0->12.5.0 through" and "the digest is resolved
+ *  for docker.gitea.com/gitea:<chart version>, so every real gitea re-vendor fails closed." Both
+ *  bugs meant gitea's `re-vendor` had never actually been exercised end to end against anything
+ *  that looks like a real bump — this suite is that exercise, against the REAL fixture chart
+ *  `@scp/vendor-refresh`'s own tests already use (real `Chart.yaml`, real `helm template`). */
+describe("trigger() dispatches 're-vendor' for gitea, end to end (finding 4)", () => {
+  beforeEach(() => __resetManagedDepOutcomes());
+
+  const GITEA_VENDORED_PATH = "deploy/helm-bundled/vendor/gitea/install-no-secrets.yaml";
+  const giteaManifestWithChartVersion = (chartVersion: string): string =>
+    [
+      `#   helm template scp-gitea gitea-charts/gitea --version ${chartVersion} --namespace scp-gitea \\`,
+      "#     --set postgresql.enabled=false",
+      "apiVersion: v1",
+      "kind: Namespace",
+      "metadata:",
+      "  name: scp-gitea",
+      ""
+    ].join("\n");
+  const GITEA_VALUES_YAML = "gitea:\n  image: docker.gitea.com/gitea:1.26.0-fixture-rootless\n";
+  const GITEA_BUNDLE_IMAGES_TS =
+    '{ name: "gitea", defaultRef: "docker.gitea.com/gitea:1.26.0-fixture-rootless" }\n';
+
+  const GITEA_DECLARED_MANIFEST_PATHS = [
+    GITEA_VENDORED_PATH,
+    "deploy/helm-bundled/vendor/gitea/config/config_environment.sh",
+    "deploy/helm-bundled/vendor/gitea/init/configure_gpg_environment.sh",
+    "deploy/helm-bundled/vendor/gitea/init/init_directory_structure.sh",
+    "deploy/helm-bundled/vendor/gitea/init/configure_gitea.sh",
+    "deploy/helm-bundled/values.yaml",
+    "deploy/airgap/src/bundle-images.ts"
+  ];
+
+  function giteaRepoFiles(currentChartVersion: string): Record<string, string> {
+    return {
+      [GITEA_VENDORED_PATH]: giteaManifestWithChartVersion(currentChartVersion),
+      "deploy/helm-bundled/values.yaml": GITEA_VALUES_YAML,
+      "deploy/airgap/src/bundle-images.ts": GITEA_BUNDLE_IMAGES_TS,
+      "tools/ci-mirror/images.list": ""
+    };
+  }
+
+  function giteaCtx(currentChartVersion: string) {
+    const { ctx, calls } = recordingCtx(revendorGithubHandler(giteaRepoFiles(currentChartVersion)));
+    return {
+      calls,
+      ctx: {
+        ...ctx,
+        config: {
+          runnerImage: "scp-runner-dep:test",
+          revendorRunnerImage: "scp-runner-dep-vendor:test",
+          scpRepo: REPO,
+          workspaceRoot: workspaceRoot(),
+          provider: "github",
+          appId: "12345",
+          installationId: "67890",
+          privateKeyPem
+        }
+      }
+    };
+  }
+
+  const giteaParams = {
+    action: "re-vendor" as const,
+    backend: "gitea",
+    fromTag: "12.5.0-fixture",
+    toTag: "12.6.0-fixture",
+    repo: REPO,
+    baseBranch: BASE_BRANCH,
+    changeObjectId: "0198f3c1-2222-7000-8000-000000000003",
+    // Deliberately requested even though gitea can never actually merge (finding 3: no confirmed
+    // signature check) — proves the downgrade of `auto_merge` to `pull_request` for an UNSIGNED
+    // backend, not just for a suspicious diff.
+    delivery: "auto_merge" as const,
+    expectedHeadCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    declaredManifestPaths: GITEA_DECLARED_MANIFEST_PATHS
+  };
+
+  it("plans a real gitea bump against the fixture chart, opens a pull request, and never merges (no signature check)", async () => {
+    const { ctx, calls } = giteaCtx("12.5.0-fixture"); // current chart is OLDER than toTag — a real forward bump
+    const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());
+    const ref = await plugin.trigger(ctx, {
+      kind: "custom",
+      idempotencyKey: "gitea-e2e:re-vendor",
+      parameters: giteaParams
+    });
+    const status = await plugin.status(ctx, ref);
+    expect(status.detail).not.toMatch(/REFUSED/);
+    expect(status.phase).toBe("succeeded");
+    // auto_merge was requested with a valid expectedHeadCommit, but gitea has NO confirmed image
+    // signature check (BACKEND_VERIFICATION) — always requires-review, always delivered as a pull
+    // request, never merged (finding 3).
+    expect(status.detail).toMatch(/opened as/);
+    expect(status.detail).not.toMatch(/merged as/);
+    expect(
+      calls.some((c) => c.method === "PUT" && c.url.includes("/pulls/") && c.url.endsWith("/merge"))
+    ).toBe(false);
+
+    // BEFORE THE FIX: this run would have thrown resolving a digest for
+    // 'docker.gitea.com/gitea:12.6.0-fixture' (the CHART version fed to resolveImageDigest as if it
+    // were the image tag) — it never got this far. Now it resolves the REAL app image tag
+    // (1.26.1-fixture-rootless, read from the pulled chart's own Chart.yaml) and commits for real.
+    const tree = calls.find((c) => c.method === "POST" && c.url.endsWith("/git/trees"));
+    expect(tree).toBeDefined();
+    const treeEntries = (tree!.body as { tree: Array<{ path: string }> }).tree;
+    expect(treeEntries.some((e) => e.path === GITEA_VENDORED_PATH)).toBe(true);
+  });
+
+  /** MUTATION-PROVE (finding 4): the OLD code compared `toTag` (a chart version) against
+   *  `values.yaml`'s stored IMAGE tag — an axis mismatch that let a CHART downgrade through as long
+   *  as the (unrelated) image tag string still looked like an increase. This manifest's image tag
+   *  is UNCHANGED between the two repo states below; only the CHART version in the header moves
+   *  backwards, and that alone must refuse. */
+  it("REFUSES a chart-version downgrade, on the chart axis, even though the stored image tag says nothing about it", async () => {
+    const { ctx, calls } = giteaCtx("12.6.0-fixture"); // current chart is NEWER than the requested toTag
+    const plugin = createManagedDepExecutorPlugin(fakeSandboxLauncher(), fakeRevendorFetchDeps());
+    const ref = await plugin.trigger(ctx, {
+      kind: "custom",
+      idempotencyKey: "gitea-e2e:downgrade",
+      parameters: { ...giteaParams, fromTag: "12.6.0-fixture", toTag: "12.5.0-fixture" }
+    });
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/REFUSED \(downgrade\)/);
+    expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/git/blobs"))).toBe(false);
+  });
+});
+
+describe("trigger() dispatches 're-vendor' — remaining refusal paths", () => {
+  beforeEach(() => __resetManagedDepOutcomes());
 
   /** MUTATION-PROVE (owner decision, "the target repository is the one CommanderSCP is configured
    *  to vendor its own stack into, which is never tenant-configurable"): a descriptor naming a

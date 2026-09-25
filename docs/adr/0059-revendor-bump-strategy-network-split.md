@@ -4,7 +4,10 @@
 `#420` adversarial review, which found the FIRST version of this ADR both architecturally wrong (untrusted
 upstream bytes reached the same process that later holds the repository-write credential) and factually
 wrong about its own claims (see "What the first version got wrong," below). This version implements the
-owner's own decision verbatim: **"Split + small amendment."**
+owner's own decision verbatim: **"Split + small amendment."** REFINED the same day, again, per a SECOND
+`#420` re-review (see "Second re-review," below): the split boundary itself held, but the orchestrator did
+not yet distrust what crossed it enough, and Gitea's two version axes were conflated in a way that made
+every real Gitea re-vendor fail closed.
 **Relates to:** ADR-0032 §8 (`scp-managed-dep`'s standard executor interface); PROJECT_CHARTER.md's
 `scp-managed-dep` amendments (2026-08-15's orchestrator/runner network split; **2026-09-25's narrow
 re-vendor grant**, added alongside this ADR); `tools/vendor-refresh` (the planner, now split across the
@@ -156,6 +159,86 @@ in this same family of images; `apps/runner-dep-vendor` follows that precedent, 
 3. **Extend `scp-runner-dep` itself with Node+Helm rather than a sibling image.** Rejected for the reason
    given above (a toolchain the tag-edit strategy never needs, and a containment story that becomes
    conditional on which strategy launched the container rather than a property of the image).
+
+## Second re-review (2026-09-25, same day) — the orchestrator did not distrust the sandbox enough
+
+The split itself (above) was confirmed sound — the trust BOUNDARY is right. What was NOT yet right
+is how much the orchestrator trusted what crossed it, and two real bugs in the gitea path:
+
+1. **Parser differentials fooled the classifier.** `classify.ts`'s `parseObjects` skipped ANY
+   document its `yaml` library could not parse (`doc.errors.length > 0 → continue`) — including a
+   duplicate mapping key, which that library reports as a parse ERROR under its own default
+   `uniqueKeys: true`, while Helm's own, far more permissive, YAML implementation accepts the same
+   document (last key wins) and applies it for real. A ClusterRoleBinding granting cluster-admin,
+   given a duplicate `name:` key, vanished from the classifier's view entirely and the run classified
+   `image-only`. Separately, TWO documents in one manifest claiming the same `kind`/`namespace`/`name`
+   collided in `parseObjects`'s `Map` — the SECOND one silently overwrote the first, so a wildcard
+   `ClusterRole` placed before a benign same-named copy was never compared at all, while both
+   documents still shipped in the pushed manifest. **Fixed**: any parse error, and any duplicate
+   object identity, is now itself a `requires-review` reason, naming the offending document — never a
+   silent skip or a last-write-wins map insert. Both are permanent probes (`classify.test.ts`, "PROBE
+   P3").
+2. **The orchestrator trusted the sandbox's verdict outright.** `output.json` was cast, not
+   validated, and its self-reported `classification` was what gated auto-merge — but the sandbox is
+   exactly where untrusted bytes get parsed, so its own verdict about what it did to them cannot be
+   what decides whether nothing unsafe happened. **Fixed**, in `revendor-orchestrator.ts`:
+   `output.json` is now parsed through `parseSandboxOutputStrict`, which refuses an unknown key
+   anywhere in the shape; the orchestrator then independently re-derives safety with NO YAML
+   parsing at all — `verifyVendoredManifestUnchanged` rejoins the returned vendor-dir file(s) and
+   asserts they equal the fetched, authenticity-checked bytes BYTE FOR BYTE (`splitIntoNamedParts`'s
+   own contract is that `parts.join("\n---\n")` reproduces the original exactly, so this is a string
+   comparison, not a parse), and `verifyOnlyTrackedImageLinesChanged` asserts every changed LINE in
+   `values.yaml`/`bundle-images.ts`/`images.list` mentions a tracked image coordinate on both sides.
+   Either check failing, or being impossible to run (Gitea: rendered from a chart, no byte-identical
+   baseline exists), is itself folded into the classification as an additional `requires-review`
+   reason — never a silent pass. A crafted-output probe (an extra field on `output.json`, a returned
+   vendored file that diverges from the fetched bytes) is a permanent test
+   (`revendor-orchestrator.test.ts`).
+3. **Auto-merge eligibility, stated precisely**: `image-only` AND authenticity VERIFIED — a
+   CONFIRMED, PASSING signature check, AND a fetch by commit SHA. `authenticityGapsFor` names both
+   axes; today only Argo CD clears both (keyless-verified, raw-tree/fetched-by-sha) — Argo Workflows,
+   Argo Rollouts, Argo Events and Gitea are ALWAYS `requires-review`, and the gap is named in the pull
+   request and the run's recorded outcome, never merely logged where a human would have to go looking
+   for it.
+4. **Gitea's two version axes were conflated.** The downgrade guard compared `toTag` (a Helm CHART
+   version, e.g. `12.6.0`) against `values.yaml`'s stored IMAGE tag (e.g. `1.26.1-rootless`) — an
+   axis mismatch that let a chart DOWNGRADE (`12.6.0` -> `12.5.0`) through as long as the unrelated
+   image-tag string still looked like an increase — and the SAME conflation fed `toTag` straight into
+   `resolveImageDigest` as if it were the image tag, so every real Gitea re-vendor asked skopeo for a
+   digest of `docker.gitea.com/gitea:12.6.0` — a reference that has never existed — and failed
+   closed, always. **Fixed**: the downgrade guard now reads the CHART version from the currently-
+   vendored manifest's own header comment (the one place it is recorded at all) for Gitea, never from
+   `values.yaml`; the image-tag axis is resolved SEPARATELY, from the pulled chart's own `Chart.yaml`
+   `appVersion` field (small, structured metadata — not a render) trying the vendored convention's
+   `<appVersion>-rootless` shape first, falling back to bare `appVersion`, and refusing outright
+   (never guessing further) if neither resolves. Exercised end to end against the real fixture chart
+   (`revendor.test.ts`'s new gitea describe block) — a real forward bump now succeeds (it used to
+   throw), and a chart-version-only downgrade is refused on the correct axis.
+5. **`declaredManifestPaths` containment was a prefix, not a closed grammar**, and a literal `..`
+   path segment defeated it outright (`deploy/helm-bundled/vendor/argocd/../../templates/argocd.yaml`
+   STARTS WITH the argocd vendor prefix as a plain string). **Fixed**: any `..` segment is refused
+   before anything else, and the remainder of the path must match a CLOSED per-backend filename
+   grammar (`install.yaml`; Gitea's five named files; Argo Workflows' `install.yaml` or the
+   two-digit `install-part-NN.yaml` shape `split.ts`'s own `partFileName` already bounds — a regex,
+   not a literal list, because the split PART COUNT is upstream's to change, finding 7) rather than
+   "anything under this directory." Separately: the Gitea chart FETCH (`helm pull --untar`) remains a
+   direct subprocess call, not routed through `ctx.http` — named honestly, not silently exempted, in
+   the charter amendment text, because `ctx.http`'s current request/response contract has no binary-
+   payload support (a chart archive would be corrupted by its UTF-8 text fallback), extending it is a
+   separate follow-up, and Gitea's re-vendor is, by finding 3's rule above, ALWAYS `requires-review`
+   regardless — the byte-opacity property this ADR otherwise requires is not load-bearing for an
+   auto-merge decision Gitea can never reach.
+6. **Decision persistence (charter principle 6) — an honestly-named gap, not built this round
+   either.** The classification now decides delivery in ENFORCED CODE (finding 3's formula), but it
+   is not YET also persisted as a queryable `decisions` row: doing so needs an `apps/server`-side
+   observer of a completed `re-vendor` run, and none exists — the `re-vendor` action has no dispatcher
+   pathway into `apps/server` at all yet (see this ADR's Consequences, "a future SIXTH bundled
+   backend" paragraph and BUILD_AND_TEST.md's own M29.8(a) scope note); a plugin process itself has no
+   database handle to write one directly. Building that observer is squarely the shape of work
+   M29.8(b) already scopes ("the dispatcher is being made to manage these five components
+   automatically anyway"). Until then, every classification and its full reasons ARE recorded — in
+   the run's own outcome/detail and the pull request body composed from it — just not yet in the
+   `decisions` table a future dispatcher would write to.
 
 ## Consequences
 

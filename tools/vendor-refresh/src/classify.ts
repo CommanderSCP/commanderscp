@@ -88,27 +88,65 @@ function objectKey(kind: string, namespace: string, name: string): string {
   return `${kind}\u0000${namespace}\u0000${name}`;
 }
 
-function parseObjects(manifestText: string): Map<string, ParsedObject> {
-  const out = new Map<string, ParsedObject>();
+/** What {@link parseObjects} found, PLUS every reason it could not trust what it found — a parser
+ *  differential (this classifier's `yaml` library rejects a document Helm's own, far more
+ *  permissive, parser accepts) or two documents claiming the same object identity are both real
+ *  signals a manifest is trying to say something to one reader that it hides from another, and
+ *  neither may be silently dropped. */
+interface ParseOutcome {
+  objects: Map<string, ParsedObject>;
+  /** Non-empty means this manifest cannot be fully trusted — the caller forces `requires-review`. */
+  problems: readonly string[];
+}
+
+function parseObjects(manifestText: string): ParseOutcome {
+  const objects = new Map<string, ParsedObject>();
+  const problems: string[] = [];
   const docs: Document.Parsed[] = parseAllDocuments(manifestText);
-  for (const doc of docs) {
-    if (doc.errors.length > 0) continue; // a document this text-level classifier cannot read is skipped, not fatal — the orchestrator's own byte-level checks (toTag present, digests resolved) are what gate correctness; this classifier's job is only to flag AUTHORITY changes it CAN see
+  docs.forEach((doc, index) => {
+    if (doc.errors.length > 0) {
+      // ANY parse error forces review — never a silent skip. A duplicate mapping key is reported
+      // exactly this way by the `yaml` library's default `uniqueKeys: true` (measured: `{a: 1, a:
+      // 2}` lands in `doc.errors`, not `doc.warnings`), and PROBE P3 (2026-09-25 re-review) is a
+      // ClusterRoleBinding granting cluster-admin with a duplicate `name:` key — this classifier
+      // used to skip it as unparseable and classify the run `image-only`, while Helm's OWN (far more
+      // permissive) YAML parser accepts the document and applies it for real. "This classifier could
+      // not read it" is not evidence nothing is there; it is at least as suspicious as "it parsed to
+      // something with authority."
+      problems.push(
+        `document ${index + 1}: FAILED TO PARSE (${doc.errors.map((e) => e.message.split("\n")[0]!).join("; ")}) — a parser differential is treated as requires-review, never silently skipped`
+      );
+      return;
+    }
     const value = doc.toJS() as unknown;
-    if (!isRecord(value)) continue;
+    if (!isRecord(value)) return;
     const kind = typeof value["kind"] === "string" ? value["kind"] : "";
-    if (kind === "") continue;
+    if (kind === "") return;
     const metadata = isRecord(value["metadata"]) ? value["metadata"] : {};
     const namespace = typeof metadata["namespace"] === "string" ? metadata["namespace"] : "";
     const name = typeof metadata["name"] === "string" ? metadata["name"] : "";
-    out.set(objectKey(kind, namespace, name), {
+    const key = objectKey(kind, namespace, name);
+    if (objects.has(key)) {
+      // TWO documents in the SAME manifest claim the same kind/namespace/name. PROBE P3's second
+      // half: a wildcard ClusterRole placed BEFORE a benign same-named copy — a `Map` can only ever
+      // keep one of them, and silently keeping the LATER (benign-looking) one while the EARLIER
+      // (malicious) bytes still ship in the pushed manifest is exactly the gap that let it merge.
+      // Never pick a side: forcing review is the only answer that does not depend on guessing which
+      // one a downstream Kubernetes apply would actually honour.
+      problems.push(
+        `document ${index + 1}: DUPLICATE OBJECT IDENTITY — ${kind} ${namespace || "(cluster-scoped)"}/${name} already appeared earlier in this manifest`
+      );
+      return;
+    }
+    objects.set(key, {
       kind,
       namespace,
       name,
       value,
       imageCoordinates: imageCoordinatesOf(value)
     });
-  }
-  return out;
+  });
+  return { objects, problems };
 }
 
 /** Strip every TRACKED image's tag/digest text from an object's value before a structural compare,
@@ -148,9 +186,17 @@ export function classifyRevendorDiff(
   trackedCoordinates: readonly string[]
 ): DiffClassification {
   const tracked = new Set(trackedCoordinates);
-  const oldObjects = parseObjects(oldManifestText);
-  const newObjects = parseObjects(newManifestText);
-  const reasons: string[] = [];
+  const oldParsed = parseObjects(oldManifestText);
+  const newParsed = parseObjects(newManifestText);
+  const oldObjects = oldParsed.objects;
+  const newObjects = newParsed.objects;
+  // A parser differential or a duplicate object identity, on EITHER side, is reason enough on its
+  // own — pushed ahead of the per-object comparison below so it can never be masked by an otherwise
+  // clean diff.
+  const reasons: string[] = [
+    ...oldParsed.problems.map((p) => `old manifest, ${p}`),
+    ...newParsed.problems.map((p) => `new manifest, ${p}`)
+  ];
 
   const allKeys = new Set([...oldObjects.keys(), ...newObjects.keys()]);
   for (const key of allKeys) {
