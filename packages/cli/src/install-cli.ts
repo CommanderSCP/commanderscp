@@ -458,11 +458,6 @@ async function startPortForward(opts: {
   };
 }
 
-/** Bounded poll: every desired backend reaches SOME status (ready or "needs") before this returns
- *  — the DoD's "ready (or its needs shown)". Never waits for full readiness of every backend,
- *  deliberately: `readyTimeoutSeconds` (chart default 600s) is the CONTROLLER's own per-backend
- *  budget, and this installer's job is to prove the stack is being worked on, which "needs" already
- *  proves as honestly as "ready" does (ADR-0058's own Stack page draws the same distinction). */
 /** Deliberately narrower than `ScpClient` — just what this function calls, so a test fixture
  *  doesn't have to implement every other `stack.*` verb to satisfy the type. A real `ScpClient`
  *  satisfies this structurally (it has strictly more). */
@@ -470,6 +465,11 @@ export interface StackReader {
   stack: { get(): Promise<StackView> };
 }
 
+/** Bounded poll: every desired backend reaches SOME status (ready or "needs") before this returns
+ *  — the DoD's "ready (or its needs shown)". Never waits for full readiness of every backend,
+ *  deliberately: `readyTimeoutSeconds` (chart default 600s) is the CONTROLLER's own per-backend
+ *  budget, and this installer's job is to prove the stack is being worked on, which "needs" already
+ *  proves as honestly as "ready" does (ADR-0058's own Stack page draws the same distinction). */
 export async function waitForStackReport(
   client: StackReader,
   desired: StackBackend[],

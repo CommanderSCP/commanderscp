@@ -100,14 +100,29 @@ Kubernetes Secret (as every generated credential in this chart already is), neve
 it is hashed (argon2) the moment it lands in `users.passwordHash`.
 
 **"Shown once, not stored in plaintext"** despite a Kubernetes Secret not being a single-read store:
-the installer deletes the Secret **after** it has confirmed the password actually logs in (step 5
-above) — not before, so a failed login leaves it for a retry — which is the closest a chart-rendered
-object gets to "consumed." `scpd`'s own ServiceAccounts gain **no** new Kubernetes RBAC to do
-this — the delete is the installer's own `kubectl`, run with the cluster access `helm install`
-already needed. Leaving the Secret in place after a failed or skipped install is harmless: a later
-`helm upgrade`'s `lookup` reuses the same password (never rotates one out from under a mid-install
-operator), and if the admin row already exists (a re-run), a stray unconsumed password is simply
-never read back by anything.
+the installer **blanks the Secret's `password` key** (`kubectl patch --type=merge`) **after** it has
+confirmed the password actually logs in (step 5 above) — not before, so a failed login leaves it for
+a retry — which is the closest a chart-rendered object gets to "consumed." `scpd`'s own
+ServiceAccounts gain **no** new Kubernetes RBAC to do this — the patch is the installer's own
+`kubectl`, run with the cluster access `helm install` already needed.
+
+**This started as an outright `kubectl delete secret`, and that was wrong** — found by actually
+running the installer against a real kind cluster, not by inspection. `api.replicaCount` defaults to
+2, and ANY later pod start for that Deployment (a rollout restart, a node reschedule, a future `helm
+upgrade`'s rolling update) failed outright once the Secret object was gone:
+`CreateContainerConfigError: secret "…-bootstrap-admin" not found`. `secretKeyRef` resolution is a
+kubelet-level, container-START-TIME check on the **Secret object**, not a value-time check — deleting
+the object breaks every future pod for that Deployment, not just the one that already read it.
+Blanking the **value** under a still-**present key** has none of that failure mode (Kubernetes only
+refuses a missing Secret or a missing key, never an empty value) and is sufficient: the plaintext is
+gone from the cluster, and no code path ever reads this env var again once the admin row exists
+(`ensureBootstrapAdmin`'s `existingAdmin` check), whatever it now contains. Verified with a real
+`kubectl rollout restart deployment/…-api` against the blanked Secret.
+
+Leaving the Secret (blanked or not) in place after a failed or skipped install is harmless: a later
+`helm upgrade`'s `lookup` reuses the same password if it is still there (never rotates one out from
+under a mid-install operator), and if the admin row already exists (a re-run), a stray unconsumed
+password is simply never read back by anything.
 
 ### 3. `stackd.enabled` flips to the chart's own default (`true`)
 
@@ -179,11 +194,11 @@ add there.
   same org), but an operator scripting repeated installs against the same release with different
   roles would see the identity move each time. Not guarded against here; the existing
   `federation init` door already has this property independent of this ADR.
-- **The bootstrap-admin Secret can accumulate a stray, never-consumed generation** across repeated
-  `helm upgrade`s once the installer has deleted the original (§2) — cosmetically present, never
-  read by any code path once the admin user row exists. Left as-is: purging it is an ordinary
-  `kubectl delete secret`, and adding chart machinery to prevent regeneration would need a state
-  Helm itself does not track (whether the admin was ever consumed).
+- **The bootstrap-admin Secret is permanent, blanked but never removed** (§2's redact-not-delete
+  fix). It sits beside the postgres/app-secrets Secrets for the life of the release — cosmetically
+  present, never read by any code path once the admin user row exists (blanked or not). An operator
+  who wants it gone entirely can `kubectl delete secret <fullname>-bootstrap-admin`; a subsequent
+  `helm upgrade` then regenerates a fresh (also-unused) one, which is harmless for the same reason.
 - **`--set` is a real escape hatch, not only a test convenience.** It is what let this ADR's own
   kind proof point `scp install` at a locally built, unpublished image
   (`--set image.repository=… --set image.tag=… --set image.pullPolicy=Never`, and the matching
