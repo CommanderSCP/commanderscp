@@ -6870,6 +6870,96 @@ export function buildProgram(): Command {
       }
     );
 
+  // M29.2 (ADR-0060): an EXISTING Gitea (Mode A import) — the bundled one is wired by the stack
+  // controller and needs no command at all. Mirrors `connect argocd`: secret first, then the system.
+  connectCmd
+    .command("gitea")
+    .description(
+      "Register an existing Gitea (stores the token, creates an execution-system). The BUNDLED Gitea " +
+        "needs no command: the stack controller registers it (`scp stack enable gitea`)"
+    )
+    .requiredOption(
+      "--url <url>",
+      "the Gitea base URL (no /api/v1), e.g. https://gitea.example.com"
+    )
+    .requiredOption(
+      "--token <token>",
+      "a Gitea access token for the account SCP acts as — scope it to write:repository and write:package"
+    )
+    .option("--name <name>", "name for the execution-system object", "gitea")
+    .option(
+      "--token-key <key>",
+      "secrets-store key to hold the token (default: <name>-gitea-token)"
+    )
+    .option("--no-validate", "skip the best-effort connectivity check")
+    .option(
+      "--allow-internal-egress",
+      "declare that this system may be reached at a private/in-cluster address. This is a " +
+        "DECLARATION, not a grant: the server also requires its host to be in the operator's " +
+        "SCP_INTERNAL_EGRESS_HOSTS allowlist, or egress stays blocked (ADR-0003)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          url: string;
+          token: string;
+          name: string;
+          tokenKey?: string;
+          validate: boolean;
+          allowInternalEgress?: boolean;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const serverUrl = opts.url.replace(/\/+$/, "").replace(/\/api\/v1$/, "");
+        const tokenKey = opts.tokenKey ?? `${opts.name}-gitea-token`;
+
+        if (opts.validate) {
+          // Best-effort, exactly as `connect argocd`: the operator's shell often cannot reach an
+          // in-cluster or air-gapped Gitea. Gitea's scheme is `token <PAT>`, not `Bearer`.
+          try {
+            const res = await fetch(`${serverUrl}/api/v1/user`, {
+              headers: { authorization: `token ${opts.token}` }
+            });
+            if (!res.ok) {
+              console.warn(
+                `WARN: Gitea ${serverUrl}/api/v1/user returned HTTP ${res.status} — registering anyway`
+              );
+            } else {
+              console.log(`Connectivity to ${serverUrl}: OK`);
+            }
+          } catch (err) {
+            console.warn(
+              `WARN: could not reach ${serverUrl} (${String(err)}) — registering anyway`
+            );
+          }
+        }
+
+        await client.secrets.put(tokenKey, { value: opts.token });
+        const created = await client.object("execution-system").create(
+          {
+            name: opts.name,
+            properties: {
+              kind: "gitea",
+              serverUrl,
+              tokenSecretKey: tokenKey,
+              ...(opts.allowInternalEgress ? { allowInternalEgress: true } : {})
+            }
+          },
+          { idempotencyKey: randomUUID() }
+        );
+        console.log(
+          `Registered execution-system '${opts.name}' (${created.id}). Token stored as secret '${tokenKey}'.`
+        );
+        console.log(
+          `NOTE: that token is held by THIS instance — anyone with access here can reach ${serverUrl}.`
+        );
+        console.log(`Next: scp iac scaffold --from ${created.id}`);
+        printResult(created, opts.output, (item) => objectRow(item as GraphObject));
+      }
+    );
+
   const executorCmd = program
     .command("executor")
     .description("Configure ExecutorPlugin instances (DESIGN §12)");

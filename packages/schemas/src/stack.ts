@@ -56,7 +56,10 @@ export const StackNeedCodeSchema = z.enum([
   /** A disabled backend's volumes and generate-once secrets are kept until a purge. */
   "data-retained",
   /** The controller's stored state did not match scpd's record of it, and was not used. */
-  "state-integrity"
+  "state-integrity",
+  /** M29.2: the backend is healthy but its wiring into SCP (scoped token, TLS trust, egress,
+   *  registration) did not complete; the message says which step and why. */
+  "wiring"
 ]);
 export type StackNeedCode = z.infer<typeof StackNeedCodeSchema>;
 
@@ -79,7 +82,11 @@ export const StackBackendSpecSchema = z.object({
   sizeTier: StackSizeTierSchema,
   /** Bumped by `POST /instance/stack/backends/{b}/purge`. A DISABLED backend keeps its data (its
    *  volumes and generate-once secrets) until this exceeds what the controller last purged. */
-  purgeGeneration: z.number().int().min(0)
+  purgeGeneration: z.number().int().min(0),
+  /** M29.2: bumped by `POST /instance/stack/backends/{b}/rotate`. The controller re-mints the
+   *  backend's scoped token (and argo-server's certificate) when this exceeds the generation the
+   *  recorded wiring satisfied. */
+  rotateGeneration: z.number().int().min(0)
 });
 export type StackBackendSpec = z.infer<typeof StackBackendSpecSchema>;
 
@@ -106,10 +113,21 @@ export const StackBackendIntegritySchema = z.object({
 });
 export type StackBackendIntegrity = z.infer<typeof StackBackendIntegritySchema>;
 
+/** M29.2: what scpd holds of a backend's wiring, as the controller may see it — a hash and a
+ *  counter, never the endpoint or the token. The controller compares `factsSha256` with the hash of
+ *  the facts it derives from its own render; a mismatch (or a rotation request) re-wires. */
+export const StackBackendWiringSpecSchema = z.object({
+  backend: StackBackendSchema,
+  factsSha256: Sha256HexSchema.nullable(),
+  rotationGeneration: z.number().int().min(0).nullable()
+});
+export type StackBackendWiringSpec = z.infer<typeof StackBackendWiringSpecSchema>;
+
 export const StackSpecDocumentSchema = z.object({
   settings: StackSettingsSchema,
   backends: z.array(StackBackendSpecSchema),
-  integrity: z.array(StackBackendIntegritySchema)
+  integrity: z.array(StackBackendIntegritySchema),
+  wiring: z.array(StackBackendWiringSpecSchema)
 });
 export type StackSpecDocument = z.infer<typeof StackSpecDocumentSchema>;
 
@@ -167,6 +185,55 @@ export const PutStackStatusRequestSchema = z.strictObject({
 });
 export type PutStackStatusRequest = z.infer<typeof PutStackStatusRequestSchema>;
 
+// ---- WIRING (controller-written, M29.2) ---------------------------------------------------------
+
+/** The backends the controller wires into SCP. Argo Rollouts is not an executor (ADR-0008 §3):
+ *  SCP reads rollout state through Argo CD and never speaks to it, so there is nothing to wire. */
+export const StackWireableBackendSchema = z.enum([
+  "argocd",
+  "argo-workflows",
+  "argo-events",
+  "gitea"
+]);
+export type StackWireableBackend = z.infer<typeof StackWireableBackendSchema>;
+
+/** An in-cluster Service URL, the only endpoint shape a wiring may name: http(s), a
+ *  `<service>.<namespace>.svc[.cluster.local]` host, an optional port, no path, no credentials. */
+export const STACK_WIRING_URL_PATTERN =
+  /^https?:\/\/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?$/;
+
+/**
+ * The controller's hand-off after a backend is healthy (`PUT /instance/stack/backends/{b}/wiring`,
+ * the controller's credential ONLY). Every value is one the controller derived from ITS OWN render
+ * and the backend it just installed — the endpoint, the CA the endpoint's certificate chains to, the
+ * scoped account — plus the token it just minted there, handed over once and never read back.
+ * scpd persists the token encrypted at the instance tier, registers the execution system in every
+ * org the stack serves, and opens the application egress for exactly that system.
+ */
+export const PutStackWiringRequestSchema = z.strictObject({
+  /** Null for a backend SCP does not call (Argo Events). */
+  serverUrl: z.string().max(300).regex(STACK_WIRING_URL_PATTERN).nullable(),
+  /** argo-workflows: the namespace its workflows run in (every API path names it). */
+  namespace: z
+    .string()
+    .regex(/^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/)
+    .nullable(),
+  /** PEM of the CA the endpoint's certificate chains to, when it is not publicly trusted. */
+  caPem: z.string().min(1).max(16_384).nullable(),
+  /** The scoped, non-admin account the token belongs to. */
+  account: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/)
+    .nullable(),
+  token: z.string().min(1).max(16_384).nullable(),
+  /** sha256 of the facts above (not the token) and the backend instance's identity — what the
+   *  controller compares next tick. */
+  factsSha256: Sha256HexSchema,
+  /** The rotate generation this hand-off satisfies. */
+  rotationGeneration: z.number().int().min(0)
+});
+export type PutStackWiringRequest = z.infer<typeof PutStackWiringRequestSchema>;
+
 // ---- THE READ MODEL -----------------------------------------------------------------------------
 
 export const StackControllerViewSchema = z.object({
@@ -179,20 +246,40 @@ export const StackControllerViewSchema = z.object({
 });
 export type StackControllerView = z.infer<typeof StackControllerViewSchema>;
 
+/** M29.2: how a backend is wired into SCP, as anyone who can read the stack may see it. */
+export const StackBackendWiringViewSchema = z.object({
+  wired: z.boolean(),
+  serverUrl: z.string().nullable(),
+  /** sha256 of the CA scpd trusts for this endpoint (the PEM itself is on the diagnostics read). */
+  caSha256: Sha256HexSchema.nullable(),
+  account: z.string().nullable(),
+  wiredAt: z.string().nullable(),
+  /** The rotate generation the current token satisfies (null when unwired). */
+  rotationGeneration: z.number().int().min(0).nullable()
+});
+export type StackBackendWiringView = z.infer<typeof StackBackendWiringViewSchema>;
+
 export const StackBackendViewSchema = z.object({
   backend: StackBackendSchema,
   enabled: z.boolean(),
   sizeTier: StackSizeTierSchema,
   purgeGeneration: z.number().int().min(0),
   /** Null until the controller has reported this backend. */
-  status: StackBackendStatusSchema.nullable()
+  status: StackBackendStatusSchema.nullable(),
+  /** M29.2: bumped by the rotate door. */
+  rotateGeneration: z.number().int().min(0),
+  /** M29.2: null for a backend SCP never wires (Argo Rollouts). */
+  wiring: StackBackendWiringViewSchema.nullable()
 });
 export type StackBackendView = z.infer<typeof StackBackendViewSchema>;
 
 export const StackViewSchema = z.object({
   settings: StackSettingsSchema,
   controller: StackControllerViewSchema,
-  backends: z.array(StackBackendViewSchema)
+  backends: z.array(StackBackendViewSchema),
+  /** M29.2: whether the Standard Stack serves the CALLER's organization — its wired backends are
+   *  registered there as execution systems. Null on a response to a machine credential. */
+  servesThisOrg: z.boolean().nullable()
 });
 export type StackView = z.infer<typeof StackViewSchema>;
 
@@ -223,6 +310,24 @@ export const InstanceActorSchema = z.object({
   credentialId: z.string().uuid().nullable()
 });
 export type InstanceActor = z.infer<typeof InstanceActorSchema>;
+
+// ---- THE ORGANIZATIONS THE STACK SERVES (M29.2) ------------------------------------------------
+
+/** One organization the Standard Stack serves: its wired backends are registered there. The
+ *  deployment's bootstrap organization is served from the first wiring on; every other one is an
+ *  instance operator's decision, because every served org drives the SAME scoped accounts. */
+export const StackServedOrgSchema = z.object({
+  orgId: z.string().uuid(),
+  orgName: z.string(),
+  attachedAt: z.string(),
+  attachedBy: InstanceActorSchema
+});
+export type StackServedOrg = z.infer<typeof StackServedOrgSchema>;
+
+export const StackServedOrgListSchema = z.object({ items: z.array(StackServedOrgSchema) });
+export type StackServedOrgList = z.infer<typeof StackServedOrgListSchema>;
+
+export const StackOrgParamSchema = z.object({ orgId: z.string().uuid() });
 
 export const InstanceOperatorGrantSchema = z.object({
   id: z.string().uuid(),

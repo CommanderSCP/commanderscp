@@ -327,6 +327,13 @@ import {
   getStackSpec as getStackSpecRequest,
   putStackStatus as putStackStatusRequest,
   purgeStackBackend as purgeStackBackendRequest,
+  // M29.2 — wiring, rotation and the organizations the stack serves (ADR-0060).
+  putStackWiring as putStackWiringRequest,
+  deleteStackWiring as deleteStackWiringRequest,
+  rotateStackBackend as rotateStackBackendRequest,
+  listStackServedOrgs as listStackServedOrgsRequest,
+  attachStackServedOrg as attachStackServedOrgRequest,
+  detachStackServedOrg as detachStackServedOrgRequest,
   getInstanceOperatorSelf as getInstanceOperatorSelfRequest,
   listInstanceOperators as listInstanceOperatorsRequest,
   grantInstanceOperator as grantInstanceOperatorRequest,
@@ -550,6 +557,8 @@ import type {
   PutStackBackendRequest,
   PutStackSettingsRequest,
   PutStackStatusRequest,
+  PutStackWiringRequest,
+  StackServedOrgList,
   InstanceOperatorGrant,
   InstanceOperatorGrantList,
   InstanceAuditEventList,
@@ -2298,6 +2307,62 @@ export class ScpClient {
         headers: { "x-scp-operator-token": operatorToken }
       });
       unwrapVoid(result);
+    },
+    /** M29.2 — the controller's hand-off after a backend is healthy (its credential ONLY). */
+    putWiring: async (
+      backend: StackBackend,
+      req: PutStackWiringRequest,
+      operatorToken: string
+    ): Promise<void> => {
+      const result = await putStackWiringRequest({
+        client: this.client,
+        path: { backend },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrapVoid(result);
+    },
+    /** M29.2 — the controller unwires a backend it is disabling (its credential ONLY). */
+    deleteWiring: async (backend: StackBackend, operatorToken: string): Promise<void> => {
+      const result = await deleteStackWiringRequest({
+        client: this.client,
+        path: { backend },
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrapVoid(result);
+    },
+    /** M29.2 — rotate a wired backend's token (and argo-server's certificate). */
+    rotate: async (backend: StackBackend, operatorToken?: string): Promise<StackView> => {
+      const result = await rotateStackBackendRequest({
+        client: this.client,
+        path: { backend },
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    /** M29.2 — the organizations the stack serves (instance authority). */
+    orgs: async (operatorToken?: string): Promise<StackServedOrgList> => {
+      const result = await listStackServedOrgsRequest({
+        client: this.client,
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    attachOrg: async (orgId: string, operatorToken?: string): Promise<StackServedOrgList> => {
+      const result = await attachStackServedOrgRequest({
+        client: this.client,
+        path: { orgId },
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
+    },
+    detachOrg: async (orgId: string, operatorToken?: string): Promise<StackServedOrgList> => {
+      const result = await detachStackServedOrgRequest({
+        client: this.client,
+        path: { orgId },
+        headers: operatorHeaders(operatorToken)
+      });
+      return unwrap(result);
     }
   };
 

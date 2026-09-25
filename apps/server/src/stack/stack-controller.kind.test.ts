@@ -131,7 +131,8 @@ describe("M29.4 the stack controller installs, removes and falls back on a real 
         federationRole: "commander",
         intervalMs: 2_000,
         readyTimeoutMs: opts.readyTimeoutMs,
-        resyncMs: 600_000
+        resyncMs: 600_000,
+        scpPodLabels: { "app.kubernetes.io/name": "commanderscp", "app.kubernetes.io/instance": "scp" }
       },
       transport,
       {

@@ -164,9 +164,13 @@ describe("M29.4 the Standard Stack API (Testcontainers, real scp_operator writes
       backend: "argo-events",
       enabled: true,
       sizeTier: "medium",
-      purgeGeneration: 0
+      purgeGeneration: 0,
+      rotateGeneration: 0
     });
     expect(spec.integrity).toHaveLength(StackBackendSchema.options.length);
+    // M29.2: a hash and a counter per backend, never an endpoint (nothing wired yet here).
+    expect(spec.wiring).toHaveLength(StackBackendSchema.options.length);
+    expect(spec.wiring.every((w) => w.factsSha256 === null)).toBe(true);
     // N1: the stack-controller scope does not open a human door, nor any other instance door.
     expect(
       (await apiError(() => tenant.stack.putBackend("gitea", { enabled: true }, STACKD_TOKEN)))

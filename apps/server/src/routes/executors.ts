@@ -76,6 +76,7 @@ import {
   resolveSecretRefs
 } from "../secrets/secrets-repo.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { stackWiredRouting } from "../stack/wired-routing.js";
 
 /** The `DiscoveryPlugin` modules (`github-discovery`, `gitea-discovery`, `gitlab-discovery`,
  *  `argocd-discovery`) — same allowlist discipline as `executor-bindings-repo.ts`'s
@@ -935,6 +936,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         let effectiveConfig = request.body.config;
         let effectiveAllowedHosts = request.body.allowedHosts;
         let effectiveSecretRefs = request.body.secretRefs ?? {};
+        let stackSecrets: Record<string, string> | undefined;
+        let trustedCaPem: string | undefined;
         const execSysRef = (request.body.config as Record<string, unknown> | undefined)
           ?.executionSystemId;
         if (typeof execSysRef === "string" && execSysRef.length > 0) {
@@ -949,48 +952,70 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           if (sys.typeId !== "execution-system") {
             throw badRequest(`'${execSysRef}' is a '${sys.typeId}', not an execution-system`);
           }
+          // M29.2 (ADR-0060): a Standard Stack registration is routed by the controller's wiring —
+          // endpoint, token, CA and egress — exactly as the binding path routes it.
+          const stack = await stackWiredRouting(
+            tx,
+            auth.orgId,
+            sys.id,
+            deps.config.secretsMasterKey
+          );
           const props = sys.properties as {
             serverUrl?: string;
             tokenSecretKey?: string;
             allowInternalEgress?: boolean;
           };
-          if (!props.serverUrl) {
-            throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+          if (stack) {
+            effectiveConfig = {
+              ...((request.body.config as Record<string, unknown>) ?? {}),
+              // Server-governed — these WIN over anything the caller sent.
+              ...stack.config
+            };
+            stackSecrets = stack.secrets;
+            effectiveAllowedHosts = stack.allowedHosts;
+            allowInternalEgress = stack.allowInternalEgress;
+            trustedCaPem = stack.trustedCaPem;
+          } else {
+            if (!props.serverUrl) {
+              throw badRequest(`execution-system '${sys.id}' is missing a 'serverUrl' property`);
+            }
+            let systemHost: string;
+            try {
+              systemHost = new URL(props.serverUrl).hostname;
+            } catch {
+              throw badRequest(`execution-system '${sys.id}' has an unparseable 'serverUrl'`);
+            }
+            // Two-layer (ADR-0003): the system's declared intent AND the operator's
+            // SCP_INTERNAL_EGRESS_HOSTS allowlist must both permit — same resolver as the binding path.
+            allowInternalEgress = resolveInternalEgress(
+              props.serverUrl,
+              props.allowInternalEgress === true
+            );
+            effectiveConfig = {
+              ...((request.body.config as Record<string, unknown>) ?? {}),
+              // Server-governed — these WIN over anything the caller sent.
+              serverUrl: props.serverUrl,
+              ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
+            };
+            effectiveSecretRefs = props.tokenSecretKey
+              ? { [props.tokenSecretKey]: props.tokenSecretKey }
+              : {};
+            // Pin egress to the registered system's OWN host, so the allowance can never be aimed
+            // anywhere else — this, not the permission gate, is what makes the grant narrow.
+            effectiveAllowedHosts = [systemHost];
           }
-          let systemHost: string;
-          try {
-            systemHost = new URL(props.serverUrl).hostname;
-          } catch {
-            throw badRequest(`execution-system '${sys.id}' has an unparseable 'serverUrl'`);
-          }
-          // Two-layer (ADR-0003): the system's declared intent AND the operator's
-          // SCP_INTERNAL_EGRESS_HOSTS allowlist must both permit — same resolver as the binding path.
-          allowInternalEgress = resolveInternalEgress(
-            props.serverUrl,
-            props.allowInternalEgress === true
-          );
-          effectiveConfig = {
-            ...((request.body.config as Record<string, unknown>) ?? {}),
-            // Server-governed — these WIN over anything the caller sent.
-            serverUrl: props.serverUrl,
-            ...(props.tokenSecretKey ? { tokenSecretKey: props.tokenSecretKey } : {})
-          };
-          effectiveSecretRefs = props.tokenSecretKey
-            ? { [props.tokenSecretKey]: props.tokenSecretKey }
-            : {};
-          // Pin egress to the registered system's OWN host, so the allowance can never be aimed
-          // anywhere else — this, not the permission gate, is what makes the grant narrow.
-          effectiveAllowedHosts = [systemHost];
         }
         // VALIDATE THE EFFECTIVE CONFIG, NOT THE REQUEST BODY. See docs/routes.md §181.
         validatePluginConfig(request.body.pluginModule, effectiveConfig);
 
-        const resolvedSecrets = await resolveSecretRefs(
-          tx,
-          auth.orgId,
-          effectiveSecretRefs,
-          deps.config.secretsMasterKey
-        );
+        const resolvedSecrets =
+          stackSecrets ??
+          (await resolveSecretRefs(
+            tx,
+            auth.orgId,
+            effectiveSecretRefs,
+            deps.config.secretsMasterKey
+          ));
         await host.start([
           {
             id: request.body.pluginInstanceId,
@@ -1000,7 +1025,8 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             config: effectiveConfig,
             secrets: resolvedSecrets,
             allowedHosts: effectiveAllowedHosts,
-            allowInternalEgress
+            allowInternalEgress,
+            ...(trustedCaPem ? { trustedCaPem } : {})
           }
         ]);
         return host.discovery(request.body.pluginInstanceId).discover();

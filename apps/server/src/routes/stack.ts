@@ -8,6 +8,7 @@ import {
   PutStackBackendRequestSchema,
   PutStackSettingsRequestSchema,
   PutStackStatusRequestSchema,
+  PutStackWiringRequestSchema,
   STACK_CONTROLLER_STALE_AFTER_MS,
   Sha256HexSchema,
   StackBackendParamSchema,
@@ -18,11 +19,15 @@ import {
   StackSpecDocumentSchema,
   StackUpdatePolicySchema,
   StackBackendPhaseSchema,
+  StackOrgParamSchema,
+  StackServedOrgListSchema,
   StackViewSchema,
+  StackWireableBackendSchema,
   type InstanceActor,
   type StackBackendView,
   type StackDiagnostics,
   type StackNeed,
+  type StackServedOrgList,
   type StackSpecDocument,
   type StackView
 } from "@scp/schemas";
@@ -37,6 +42,23 @@ import { verifyOperatorCredential } from "../auth/operator-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { badRequest, conflict } from "../errors.js";
 import { withOperatorTx } from "./instance-operators.js";
+import {
+  attachServedOrg,
+  detachServedOrg,
+  dropWiring,
+  isWireableBackend,
+  listServedOrgs,
+  readWiringsAsTenant,
+  readWiringsOnClient,
+  reconcileStackRegistrations,
+  stackServesOrg,
+  storeWiring,
+  validateWiring,
+  wiringOf,
+  SELECT_WIRINGS,
+  type Wiring,
+  type WiringRow
+} from "../stack/wiring.js";
 
 /**
  * THE STANDARD STACK's API (M29.4, ADR-0058). Two audiences, two kinds of door:
@@ -57,6 +79,7 @@ interface BackendRow extends Record<string, unknown> {
   enabled: boolean;
   size_tier: string;
   purge_generation: number;
+  rotate_generation: number;
   phase: string | null;
   running_version: string | null;
   target_version: string | null;
@@ -79,6 +102,10 @@ interface SettingsRow extends Record<string, unknown> {
 interface StackRows {
   backends: BackendRow[];
   settings: SettingsRow | undefined;
+  /** M29.2 — the controller's hand-offs (non-secret facts; tokens live elsewhere). */
+  wirings: Wiring[];
+  /** M29.2 — whether the stack serves the reader's org; null when no org is reading. */
+  servesThisOrg: boolean | null;
 }
 
 const iso = (v: Date | string | null): string | null =>
@@ -101,10 +128,12 @@ const hexOrNull = (v: string | null): string | null =>
   v !== null && Sha256HexSchema.safeParse(v).success ? v : null;
 
 /** Every backend, always — an absent row is the never-configured default. */
-function backendViews(rows: BackendRow[]): StackBackendView[] {
+function backendViews(rows: BackendRow[], wirings: Wiring[]): StackBackendView[] {
   const byName = new Map(rows.map((r) => [r.backend, r]));
+  const wired = new Map(wirings.map((w) => [w.backend as string, w]));
   return StackBackendSchema.options.map((backend) => {
     const row = byName.get(backend);
+    const w = wired.get(backend);
     const tier = StackSizeTierSchema.safeParse(row?.size_tier);
     const phase = StackBackendPhaseSchema.safeParse(row?.phase);
     return {
@@ -122,7 +151,18 @@ function backendViews(rows: BackendRow[]): StackBackendView[] {
               needs: parseNeeds(row.needs),
               observedAt: iso(row.status_observed_at)!
             }
-          : null
+          : null,
+      rotateGeneration: row?.rotate_generation ?? 0,
+      wiring: isWireableBackend(backend)
+        ? {
+            wired: w !== undefined,
+            serverUrl: w?.serverUrl ?? null,
+            caSha256: hexOrNull(w?.caSha256 ?? null),
+            account: w?.account ?? null,
+            wiredAt: w?.wiredAt ?? null,
+            rotationGeneration: w?.rotationGeneration ?? null
+          }
+        : null
     };
   });
 }
@@ -146,7 +186,8 @@ export function stackViewOf(rows: StackRows, now: Date = new Date()): StackView 
         seenAt !== null && now.getTime() - Date.parse(seenAt) <= STACK_CONTROLLER_STALE_AFTER_MS,
       observedUpgradeGeneration: rows.settings?.controller_observed_upgrade_generation ?? null
     },
-    backends: backendViews(rows.backends)
+    backends: backendViews(rows.backends, rows.wirings),
+    servesThisOrg: rows.servesThisOrg
   };
 }
 
@@ -156,26 +197,37 @@ export function stackSpecOf(rows: StackRows): StackSpecDocument {
   const byName = new Map(rows.backends.map((r) => [r.backend, r]));
   return {
     settings: settingsOf(rows.settings),
-    backends: backendViews(rows.backends).map(
-      ({ backend, enabled, sizeTier, purgeGeneration }) => ({
+    backends: backendViews(rows.backends, rows.wirings).map(
+      ({ backend, enabled, sizeTier, purgeGeneration, rotateGeneration }) => ({
         backend,
         enabled,
         sizeTier,
-        purgeGeneration
+        purgeGeneration,
+        rotateGeneration
       })
     ),
     integrity: StackBackendSchema.options.map((backend) => ({
       backend,
       lastGoodSha256: hexOrNull(byName.get(backend)?.last_good_sha256 ?? null),
       inventorySha256: hexOrNull(byName.get(backend)?.inventory_sha256 ?? null)
-    }))
+    })),
+    // A hash and a counter per backend — never the endpoint, the CA or the token (the census).
+    wiring: StackBackendSchema.options.map((backend) => {
+      const w = rows.wirings.find((x) => x.backend === backend);
+      return {
+        backend,
+        factsSha256: hexOrNull(w?.factsSha256 ?? null),
+        rotationGeneration: w?.rotationGeneration ?? null
+      };
+    })
   };
 }
 
 type Executor = (query: ReturnType<typeof sql>) => Promise<Record<string, unknown>[]>;
 
 const SELECT_BACKENDS = sql`
-  SELECT backend, enabled, size_tier, purge_generation, phase, running_version, target_version,
+  SELECT backend, enabled, size_tier, purge_generation, rotate_generation, phase, running_version,
+         target_version,
          last_error, needs, detail, last_good_sha256, inventory_sha256, status_observed_at
     FROM stack_backends`;
 const SELECT_SETTINGS = sql`
@@ -183,10 +235,16 @@ const SELECT_SETTINGS = sql`
          controller_observed_upgrade_generation, controller_seen_at
     FROM stack_settings WHERE id = 'instance'`;
 
-async function readStackRows(exec: Executor): Promise<StackRows> {
+async function readStackRows(
+  exec: Executor,
+  servesThisOrg: boolean | null = null
+): Promise<StackRows> {
   const backends = (await exec(SELECT_BACKENDS)) as BackendRow[];
   const settings = (await exec(SELECT_SETTINGS)) as SettingsRow[];
-  return { backends, settings: settings[0] };
+  const wirings = ((await exec(sql.raw(SELECT_WIRINGS))) as WiringRow[]).flatMap(
+    (r) => wiringOf(r) ?? []
+  );
+  return { backends, settings: settings[0], wirings, servesThisOrg };
 }
 
 /** Reads through the request-serving pool; the tables' `tenant_read` policy is `USING (true)`. */
@@ -195,8 +253,8 @@ async function readStackUnscoped(deps: AppDeps): Promise<StackRows> {
 }
 
 async function readStackAsTenant(deps: AppDeps, orgId: string): Promise<StackRows> {
-  return withTenantTx(deps.db, orgId, (tx) =>
-    readStackRows(async (q) => (await tx.execute(q)).rows)
+  return withTenantTx(deps.db, orgId, async (tx) =>
+    readStackRows(async (q) => (await tx.execute(q)).rows, await stackServesOrg(tx, orgId))
   );
 }
 
@@ -204,9 +262,9 @@ async function readStackAsTenant(deps: AppDeps, orgId: string): Promise<StackRow
 async function readStackOnClient(client: pg.PoolClient): Promise<StackRows> {
   const backends = (
     await client.query<BackendRow>(
-      `SELECT backend, enabled, size_tier, purge_generation, phase, running_version,
-              target_version, last_error, needs, detail, last_good_sha256, inventory_sha256,
-              status_observed_at FROM stack_backends`
+      `SELECT backend, enabled, size_tier, purge_generation, rotate_generation, phase,
+              running_version, target_version, last_error, needs, detail, last_good_sha256,
+              inventory_sha256, status_observed_at FROM stack_backends`
     )
   ).rows;
   const settings = (
@@ -216,7 +274,7 @@ async function readStackOnClient(client: pg.PoolClient): Promise<StackRows> {
          FROM stack_settings WHERE id = 'instance'`
     )
   ).rows[0];
-  return { backends, settings };
+  return { backends, settings, wirings: await readWiringsOnClient(client), servesThisOrg: null };
 }
 
 const SURFACE = "the Standard Stack";
@@ -508,7 +566,7 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
       }
     },
     handler: async (request, reply) => {
-      await requireStackControllerCredential(deps, request);
+      const controllerActor = await requireStackControllerCredential(deps, request);
       const body = request.body;
       const names = body.backends.map((b) => b.backend);
       if (new Set(names).size !== names.length) {
@@ -556,7 +614,242 @@ export function registerStackRoutes(app: FastifyInstance, deps: AppDeps): void {
           );
         }
       });
+      // M29.2: converge the registrations on the controller's heartbeat, so an org served (or a
+      // registration object lost) between hand-offs is repaired within a tick. Debounced: the
+      // controller reports after every backend, and once a minute is plenty for convergence.
+      await convergeRegistrations(deps, request.id, controllerActor);
       reply.status(204).send();
     }
   });
+
+  // ---- M29.2: wiring (ADR-0060) --------------------------------------------------------------
+
+  typed.route({
+    method: "PUT",
+    url: "/api/v1/instance/stack/backends/:backend/wiring",
+    schema: {
+      params: StackBackendParamSchema,
+      body: PutStackWiringRequestSchema,
+      response: { 204: z.undefined(), 400: ProblemSchema, 403: ProblemSchema, 409: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "putStackWiring",
+        summary:
+          "The stack controller's hand-off after a backend is healthy: its in-cluster endpoint, the CA that endpoint chains to, the scoped account and the token just minted there. scpd keeps the token encrypted at the instance tier and registers the execution system in every organization the stack serves (the stack controller's credential ONLY; audited; ADR-0060)",
+        tags: ["stack"]
+      }
+    },
+    handler: async (request, reply) => {
+      const actor = await requireStackControllerCredential(deps, request);
+      const { backend } = request.params;
+      if (!isWireableBackend(backend)) {
+        throw badRequest(
+          `${backend} is not wired into SCP: SCP reads rollout state through Argo CD and never calls it (ADR-0008 §3)`
+        );
+      }
+      validateWiring(backend, request.body);
+      await withOperatorTx(deps.config, SURFACE, async (client) => {
+        const row = await client.query<{ enabled: boolean }>(
+          "SELECT enabled FROM stack_backends WHERE backend = $1 FOR SHARE",
+          [backend]
+        );
+        // The spec is the authority: a hand-off for a backend an operator has since disabled is
+        // refused, and the controller unwires it on its next tick.
+        if (!row.rows[0]?.enabled) throw conflict(`${backend} is not enabled`);
+        await storeWiring(client, {
+          backend,
+          body: request.body,
+          masterKey: deps.config.secretsMasterKey,
+          actor,
+          requestId: request.id,
+          bootstrapOrgName: deps.config.bootstrapOrgName
+        });
+      });
+      await reconcileStackRegistrations(deps, request.id, actor);
+      reply.status(204).send();
+    }
+  });
+
+  typed.route({
+    method: "DELETE",
+    url: "/api/v1/instance/stack/backends/:backend/wiring",
+    schema: {
+      params: StackBackendParamSchema,
+      response: { 204: z.undefined(), 403: ProblemSchema }
+    },
+    config: {
+      openapi: {
+        operationId: "deleteStackWiring",
+        summary:
+          "The stack controller unwires a backend it is disabling: its token and wiring are dropped, and every registration of it refuses to resolve until it is wired again (the stack controller's credential ONLY; audited; ADR-0060)",
+        tags: ["stack"]
+      }
+    },
+    handler: async (request, reply) => {
+      const actor = await requireStackControllerCredential(deps, request);
+      const { backend } = request.params;
+      if (isWireableBackend(backend)) {
+        await withOperatorTx(deps.config, SURFACE, (client) =>
+          dropWiring(client, { backend, actor, requestId: request.id })
+        );
+      }
+      reply.status(204).send();
+    }
+  });
+
+  typed.route({
+    method: "POST",
+    url: "/api/v1/instance/stack/backends/:backend/rotate",
+    schema: { params: StackBackendParamSchema, response: changeResponses },
+    config: {
+      openapi: {
+        operationId: "rotateStackBackend",
+        summary:
+          "Rotate a wired backend's credentials: the stack controller mints a new scoped token (and, for Argo Workflows, a new server certificate), hands it to scpd and revokes the old one (instance-operator role or operator credential; audited; ADR-0060)",
+        tags: ["stack"]
+      }
+    },
+    handler: async (request, reply) => {
+      const actor = await requireInstanceAuthority(deps, request, SURFACE);
+      const { backend } = request.params;
+      if (!StackWireableBackendSchema.safeParse(backend).success) {
+        throw badRequest(`${backend} holds no credential SCP uses, so there is nothing to rotate`);
+      }
+      const view = await auditedChange(
+        deps,
+        request.id,
+        actor,
+        { action: "stack.backend.rotate", subject: backend },
+        async (client) => {
+          const res = await client.query<{ rotate_generation: number; enabled: boolean }>(
+            `UPDATE stack_backends SET rotate_generation = rotate_generation + 1
+              WHERE backend = $1 AND enabled RETURNING rotate_generation, enabled`,
+            [backend]
+          );
+          if (!res.rows[0])
+            throw conflict(`${backend} is not enabled — there is nothing to rotate`);
+          return { rotateGeneration: res.rows[0].rotate_generation };
+        }
+      );
+      reply.status(200).send(view);
+    }
+  });
+
+  // ---- M29.2: the organizations the stack serves --------------------------------------------
+
+  const orgList = async (client: pg.PoolClient): Promise<StackServedOrgList> => ({
+    items: (await listServedOrgs(client)).map((r) => ({
+      orgId: r.org_id,
+      orgName: r.org_name,
+      attachedAt: iso(r.attached_at)!,
+      attachedBy: r.attached_by
+    }))
+  });
+  const orgResponses = {
+    200: StackServedOrgListSchema,
+    400: ProblemSchema,
+    401: ProblemSchema,
+    403: ProblemSchema,
+    409: ProblemSchema
+  };
+
+  typed.route({
+    method: "GET",
+    url: "/api/v1/instance/stack/orgs",
+    schema: { response: orgResponses },
+    config: {
+      openapi: {
+        operationId: "listStackServedOrgs",
+        summary:
+          "The organizations the Standard Stack serves — its wired backends are registered in each as execution systems, all driving the same scoped accounts (instance-operator role or operator credential; ADR-0060)",
+        tags: ["stack"]
+      }
+    },
+    handler: async (request, reply) => {
+      await requireInstanceAuthority(deps, request, SURFACE);
+      reply.status(200).send(await withOperatorTx(deps.config, SURFACE, orgList));
+    }
+  });
+
+  typed.route({
+    method: "PUT",
+    url: "/api/v1/instance/stack/orgs/:orgId",
+    schema: { params: StackOrgParamSchema, response: orgResponses },
+    config: {
+      openapi: {
+        operationId: "attachStackServedOrg",
+        summary:
+          "Serve another organization with the Standard Stack: every wired backend is registered there. Its tenants then drive the same scoped backend accounts as every other served org — an instance decision, never an org's own (instance-operator role or operator credential; audited; ADR-0060)",
+        tags: ["stack"]
+      }
+    },
+    handler: async (request, reply) => {
+      const actor = await requireInstanceAuthority(deps, request, SURFACE);
+      const body = await withOperatorTx(deps.config, SURFACE, async (client) => {
+        await attachServedOrg(client, {
+          orgId: request.params.orgId,
+          actor,
+          requestId: request.id
+        });
+        return orgList(client);
+      });
+      await reconcileStackRegistrations(deps, request.id, actor);
+      reply.status(200).send(body);
+    }
+  });
+
+  typed.route({
+    method: "DELETE",
+    url: "/api/v1/instance/stack/orgs/:orgId",
+    schema: { params: StackOrgParamSchema, response: orgResponses },
+    config: {
+      openapi: {
+        operationId: "detachStackServedOrg",
+        summary:
+          "Stop serving an organization: its registrations stay (with their bindings) but refuse to resolve, and its tenant transactions can no longer read any stack token (instance-operator role or operator credential; audited; ADR-0060)",
+        tags: ["stack"]
+      }
+    },
+    handler: async (request, reply) => {
+      const actor = await requireInstanceAuthority(deps, request, SURFACE);
+      const body = await withOperatorTx(deps.config, SURFACE, async (client) => {
+        await detachServedOrg(client, {
+          orgId: request.params.orgId,
+          actor,
+          requestId: request.id
+        });
+        return orgList(client);
+      });
+      reply.status(200).send(body);
+    }
+  });
+}
+
+/** Last convergence per process — the status door's debounce (the hand-off and attach doors
+ *  reconcile unconditionally). */
+let lastConvergedAt = 0;
+const CONVERGE_EVERY_MS = 60_000;
+
+async function convergeRegistrations(
+  deps: AppDeps,
+  requestId: string,
+  actor: InstanceActor
+): Promise<void> {
+  if (Date.now() - lastConvergedAt < CONVERGE_EVERY_MS) return;
+  lastConvergedAt = Date.now();
+  try {
+    await reconcileStackRegistrations(deps, requestId, actor);
+  } catch (err) {
+    // The report itself is recorded; a registration that could not be repaired is retried next
+    // time and must not turn the controller's heartbeat into an error.
+    request_log(err);
+  }
+}
+
+function request_log(err: unknown): void {
+  console.error(
+    "[stack] registration convergence failed:",
+    err instanceof Error ? err.message : String(err)
+  );
 }

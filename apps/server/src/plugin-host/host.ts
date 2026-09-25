@@ -204,7 +204,9 @@ export function configFingerprint(config: PluginHostInstanceConfig): string {
           config: config.config ?? null,
           secrets: config.secrets ?? null,
           allowedHosts: config.allowedHosts ?? null,
-          allowInternalEgress: config.allowInternalEgress ?? false
+          allowInternalEgress: config.allowInternalEgress ?? false,
+          // M29.2: a rotated backend CA must restart the instance, or it keeps the old anchor.
+          trustedCaPem: config.trustedCaPem ?? null
         })
       )
     )
@@ -440,6 +442,9 @@ export class SubprocessPluginHost implements PluginHost {
       // Its own env var (not `SCP_PLUGIN_CONFIG_JSON`), so a plugin's `config` can never spoof it.
       SCP_PLUGIN_ALLOW_INTERNAL_EGRESS: String(instance.config.allowInternalEgress === true)
     };
+    // M29.2 (ADR-0060): the per-instance trust anchor the resolver took from the stack
+    // controller's wiring — never from config, so a plugin's `config` cannot name one.
+    if (instance.config.trustedCaPem) env.SCP_PLUGIN_TRUSTED_CA_PEM = instance.config.trustedCaPem;
     // The federation mutual-TLS material handed to a subprocess. See docs/plugin-host.md §60.
     if (instance.config.module === "federation-https") {
       for (const key of [

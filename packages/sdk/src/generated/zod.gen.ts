@@ -7268,13 +7268,24 @@ export const zGetStackResponse = z.object({
                     'upgrade-approval',
                     'upgrade-rolled-back',
                     'data-retained',
-                    'state-integrity'
+                    'state-integrity',
+                    'wiring'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
             observedAt: z.string()
+        }).nullable(),
+        rotateGeneration: z.int().gte(0).lte(9007199254740991),
+        wiring: z.object({
+            wired: z.boolean(),
+            serverUrl: z.string().nullable(),
+            caSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+            account: z.string().nullable(),
+            wiredAt: z.string().nullable(),
+            rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
-    }))
+    })),
+    servesThisOrg: z.boolean().nullable()
 });
 
 /**
@@ -7327,13 +7338,24 @@ export const zPutStackBackendResponse = z.object({
                     'upgrade-approval',
                     'upgrade-rolled-back',
                     'data-retained',
-                    'state-integrity'
+                    'state-integrity',
+                    'wiring'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
             observedAt: z.string()
+        }).nullable(),
+        rotateGeneration: z.int().gte(0).lte(9007199254740991),
+        wiring: z.object({
+            wired: z.boolean(),
+            serverUrl: z.string().nullable(),
+            caSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+            account: z.string().nullable(),
+            wiredAt: z.string().nullable(),
+            rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
-    }))
+    })),
+    servesThisOrg: z.boolean().nullable()
 });
 
 /**
@@ -7386,13 +7408,24 @@ export const zPurgeStackBackendResponse = z.object({
                     'upgrade-approval',
                     'upgrade-rolled-back',
                     'data-retained',
-                    'state-integrity'
+                    'state-integrity',
+                    'wiring'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
             observedAt: z.string()
+        }).nullable(),
+        rotateGeneration: z.int().gte(0).lte(9007199254740991),
+        wiring: z.object({
+            wired: z.boolean(),
+            serverUrl: z.string().nullable(),
+            caSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+            account: z.string().nullable(),
+            wiredAt: z.string().nullable(),
+            rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
-    }))
+    })),
+    servesThisOrg: z.boolean().nullable()
 });
 
 /**
@@ -7445,13 +7478,24 @@ export const zPutStackSettingsResponse = z.object({
                     'upgrade-approval',
                     'upgrade-rolled-back',
                     'data-retained',
-                    'state-integrity'
+                    'state-integrity',
+                    'wiring'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
             observedAt: z.string()
+        }).nullable(),
+        rotateGeneration: z.int().gte(0).lte(9007199254740991),
+        wiring: z.object({
+            wired: z.boolean(),
+            serverUrl: z.string().nullable(),
+            caSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+            account: z.string().nullable(),
+            wiredAt: z.string().nullable(),
+            rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
-    }))
+    })),
+    servesThisOrg: z.boolean().nullable()
 });
 
 /**
@@ -7504,13 +7548,24 @@ export const zRequestStackUpgradeResponse = z.object({
                     'upgrade-approval',
                     'upgrade-rolled-back',
                     'data-retained',
-                    'state-integrity'
+                    'state-integrity',
+                    'wiring'
                 ]),
                 message: z.string().min(1).max(500)
             })).max(20),
             observedAt: z.string()
+        }).nullable(),
+        rotateGeneration: z.int().gte(0).lte(9007199254740991),
+        wiring: z.object({
+            wired: z.boolean(),
+            serverUrl: z.string().nullable(),
+            caSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+            account: z.string().nullable(),
+            wiredAt: z.string().nullable(),
+            rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
-    }))
+    })),
+    servesThisOrg: z.boolean().nullable()
 });
 
 /**
@@ -7565,13 +7620,24 @@ export const zGetStackDiagnosticsResponse = z.object({
                         'upgrade-approval',
                         'upgrade-rolled-back',
                         'data-retained',
-                        'state-integrity'
+                        'state-integrity',
+                        'wiring'
                     ]),
                     message: z.string().min(1).max(500)
                 })).max(20),
                 observedAt: z.string()
+            }).nullable(),
+            rotateGeneration: z.int().gte(0).lte(9007199254740991),
+            wiring: z.object({
+                wired: z.boolean(),
+                serverUrl: z.string().nullable(),
+                caSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+                account: z.string().nullable(),
+                wiredAt: z.string().nullable(),
+                rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
             }).nullable()
-        }))
+        })),
+        servesThisOrg: z.boolean().nullable()
     }),
     backends: z.array(z.object({
         backend: z.enum([
@@ -7607,7 +7673,8 @@ export const zGetStackSpecResponse = z.object({
             'medium',
             'large'
         ]),
-        purgeGeneration: z.int().gte(0).lte(9007199254740991)
+        purgeGeneration: z.int().gte(0).lte(9007199254740991),
+        rotateGeneration: z.int().gte(0).lte(9007199254740991)
     })),
     integrity: z.array(z.object({
         backend: z.enum([
@@ -7619,6 +7686,17 @@ export const zGetStackSpecResponse = z.object({
         ]),
         lastGoodSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
         inventorySha256: z.string().regex(/^[0-9a-f]{64}$/).nullable()
+    })),
+    wiring: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        factsSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+        rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
     }))
 });
 
@@ -7626,6 +7704,155 @@ export const zGetStackSpecResponse = z.object({
  * Success
  */
 export const zPutStackStatusResponse = z.void();
+
+/**
+ * Success
+ */
+export const zDeleteStackWiringResponse = z.void();
+
+/**
+ * Success
+ */
+export const zPutStackWiringResponse = z.void();
+
+/**
+ * Success
+ */
+export const zRotateStackBackendResponse = z.object({
+    settings: z.object({
+        updatePolicy: z.enum(['automatic', 'manual']),
+        upgradeGeneration: z.int().gte(0).lte(9007199254740991)
+    }),
+    controller: z.object({
+        release: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+        lastSeenAt: z.string().nullable(),
+        reporting: z.boolean(),
+        observedUpgradeGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+    }),
+    backends: z.array(z.object({
+        backend: z.enum([
+            'argocd',
+            'argo-workflows',
+            'argo-rollouts',
+            'argo-events',
+            'gitea'
+        ]),
+        enabled: z.boolean(),
+        sizeTier: z.enum([
+            'small',
+            'medium',
+            'large'
+        ]),
+        purgeGeneration: z.int().gte(0).lte(9007199254740991),
+        status: z.object({
+            phase: z.enum([
+                'installing',
+                'ready',
+                'degraded',
+                'upgrading',
+                'failed',
+                'removing',
+                'disabled'
+            ]),
+            runningVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            targetVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/).nullable(),
+            lastError: z.string().max(2000).nullable(),
+            needs: z.array(z.object({
+                code: z.enum([
+                    'infra-state-backend',
+                    'infra-runner-image',
+                    'rpm-builder-image',
+                    'upgrade-approval',
+                    'upgrade-rolled-back',
+                    'data-retained',
+                    'state-integrity',
+                    'wiring'
+                ]),
+                message: z.string().min(1).max(500)
+            })).max(20),
+            observedAt: z.string()
+        }).nullable(),
+        rotateGeneration: z.int().gte(0).lte(9007199254740991),
+        wiring: z.object({
+            wired: z.boolean(),
+            serverUrl: z.string().nullable(),
+            caSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+            account: z.string().nullable(),
+            wiredAt: z.string().nullable(),
+            rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
+        }).nullable()
+    })),
+    servesThisOrg: z.boolean().nullable()
+});
+
+/**
+ * Success
+ */
+export const zListStackServedOrgsResponse = z.object({
+    items: z.array(z.object({
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        orgName: z.string(),
+        attachedAt: z.string(),
+        attachedBy: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        })
+    }))
+});
+
+/**
+ * Success
+ */
+export const zDetachStackServedOrgResponse = z.object({
+    items: z.array(z.object({
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        orgName: z.string(),
+        attachedAt: z.string(),
+        attachedBy: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        })
+    }))
+});
+
+/**
+ * Success
+ */
+export const zAttachStackServedOrgResponse = z.object({
+    items: z.array(z.object({
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        orgName: z.string(),
+        attachedAt: z.string(),
+        attachedBy: z.object({
+            mechanism: z.enum([
+                'session-role',
+                'credential',
+                'bootstrap-env-token',
+                'install'
+            ]),
+            orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            userId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            username: z.string().nullable(),
+            credentialId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+        })
+    }))
+});
 
 /**
  * Success

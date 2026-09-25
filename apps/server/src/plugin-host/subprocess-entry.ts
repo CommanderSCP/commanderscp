@@ -500,6 +500,9 @@ async function main(): Promise<void> {
   // whom we are willing to VERIFY. Any executor plugin can face a privately-signed endpoint, so the
   // host forwards this to every plugin subprocess. It grants no identity and weakens no check.
   const executorTlsCa = loadExecutorTlsCa();
+  // M29.2 (ADR-0060): this instance's own anchor, set by the host only for a stack-wired system.
+  const instanceCa = process.env.SCP_PLUGIN_TRUSTED_CA_PEM || undefined;
+  const extraCas = [executorTlsCa, instanceCa].filter((c): c is string => c !== undefined);
 
   const plugin = await loadPlugin(moduleName);
   const ctx: PluginContext = {
@@ -507,7 +510,12 @@ async function main(): Promise<void> {
     scopeKey,
     logger: stderrLogger(instanceId),
     secrets: envSecretsAccessor(),
-    http: scopedFetchHttpClient(allowedHosts, allowInternalPrivate, mtls, executorTlsCa),
+    http: scopedFetchHttpClient(
+      allowedHosts,
+      allowInternalPrivate,
+      mtls,
+      extraCas.length > 0 ? extraCas.join("\n") : undefined
+    ),
     config
   };
 
