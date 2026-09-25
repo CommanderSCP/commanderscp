@@ -8,8 +8,10 @@ import { fire, render, typeInto } from "../test-support/render-dom";
 /**
  * ADMIN › STACK (M29.4, ADR-0058), over a mocked SDK. What is pinned: the page reads through
  * `client.stack.get` with the session alone; every change goes through its `client.stack.*` verb
- * WITH the typed operator credential, and is impossible without one; the honesty of an enabled
- * backend the controller never reported, and of a controller that stopped reporting.
+ * with NO credential (owner decision 2026-09-25: the server checks the session's instance-operator
+ * role) and is offered only when the session holds that role; the page has no credential field at
+ * all; purge needs the backend's name retyped; and the honesty of an enabled backend the controller
+ * never reported, and of a controller that stopped reporting.
  */
 
 const NOW = Date.parse("2026-09-24T12:00:00.000Z");
@@ -27,6 +29,7 @@ function view(over: Partial<StackView> = {}): StackView {
       backend,
       enabled: backend === "argo-events" || backend === "argo-workflows",
       sizeTier: "small" as const,
+      purgeGeneration: 0,
       status:
         backend === "argo-events"
           ? {
@@ -60,9 +63,16 @@ function view(over: Partial<StackView> = {}): StackView {
 
 const calls: { method: string; args: unknown[] }[] = [];
 let current: StackView = view();
+let holdsRole = true;
 
 vi.mock("../lib/client", () => ({
   client: {
+    instanceOperators: {
+      self: async () => {
+        calls.push({ method: "self", args: [] });
+        return holdsRole;
+      }
+    },
     stack: {
       get: async () => {
         calls.push({ method: "get", args: [] });
@@ -78,6 +88,10 @@ vi.mock("../lib/client", () => ({
       },
       requestUpgrade: async (...args: unknown[]) => {
         calls.push({ method: "requestUpgrade", args });
+        return current;
+      },
+      purge: async (...args: unknown[]) => {
+        calls.push({ method: "purge", args });
         return current;
       },
       diagnostics: async (...args: unknown[]) => {
@@ -124,6 +138,7 @@ async function mount() {
 afterEach(() => {
   calls.length = 0;
   current = view();
+  holdsRole = true;
   vi.restoreAllMocks();
   document.body.innerHTML = "";
 });
@@ -131,11 +146,18 @@ afterEach(() => {
 describe("Admin › Stack", () => {
   it("reads the stack with the session alone, and shows every backend", async () => {
     const page = await mount();
-    expect(calls.map((c) => c.method)).toEqual(["get"]);
+    expect(calls.map((c) => c.method).sort()).toEqual(["get", "self"]);
     for (const b of StackBackendSchema.options)
       expect(page.byTestId(`stack-row-${b}`)).toBeTruthy();
     expect(page.byTestId("stack-phase-argo-events").textContent).toBe("ready");
     expect(page.byTestId("stack-controller-ok").textContent).toContain("release 1.0.0");
+  });
+
+  it("OWNER DECISION: the page has no credential field — nothing asks for, or holds, a deployment credential", async () => {
+    const page = await mount();
+    expect(page.container.querySelector('input[type="password"]')).toBeNull();
+    expect(page.container.querySelector('[data-testid="stack-operator-token"]')).toBeNull();
+    expect(page.html()).not.toMatch(/scp_op_|operator credential/i);
   });
 
   it("an enabled backend the controller has not reported is PENDING, amber-dashed — never a guessed phase", async () => {
@@ -156,7 +178,8 @@ describe("Admin › Stack", () => {
     expect(page.byTestId("stack-error-gitea").textContent).toContain("did not become healthy");
   });
 
-  it("every change is disabled until the operator credential is entered", async () => {
+  it("without the instance-operator role every change is off, and the page says why", async () => {
+    holdsRole = false;
     const page = await mount();
     for (const id of [
       "stack-toggle-argocd",
@@ -166,15 +189,14 @@ describe("Admin › Stack", () => {
     ]) {
       expect((page.byTestId(id) as HTMLButtonElement).disabled, id).toBe(true);
     }
+    expect(page.byTestId("stack-no-role").textContent).toContain("instance-operator role");
     page.click("stack-toggle-argocd");
     await settle();
-    expect(calls.map((c) => c.method)).toEqual(["get"]);
+    expect(calls.filter((c) => c.method !== "get" && c.method !== "self")).toEqual([]);
   });
 
-  it("enable, disable, upgrade and the update policy send the typed credential through their SDK verbs", async () => {
+  it("with the role, enable, disable, upgrade and the update policy go through their SDK verbs with NO credential", async () => {
     const page = await mount();
-    typeInto(page.byTestId("stack-operator-token") as HTMLInputElement, "scp_op_typed.secret");
-    await settle();
     page.click("stack-toggle-argocd");
     await settle();
     page.click("stack-toggle-argo-events");
@@ -185,33 +207,46 @@ describe("Admin › Stack", () => {
     policy.value = "manual";
     fire(policy, new Event("change", { bubbles: true }));
     await settle();
-    expect(calls.filter((c) => c.method !== "get")).toEqual([
-      { method: "putBackend", args: ["argocd", { enabled: true }, "scp_op_typed.secret"] },
-      { method: "putBackend", args: ["argo-events", { enabled: false }, "scp_op_typed.secret"] },
-      { method: "requestUpgrade", args: ["scp_op_typed.secret"] },
-      { method: "putSettings", args: [{ updatePolicy: "manual" }, "scp_op_typed.secret"] }
+    expect(calls.filter((c) => c.method !== "get" && c.method !== "self")).toEqual([
+      { method: "putBackend", args: ["argocd", { enabled: true }] },
+      { method: "putBackend", args: ["argo-events", { enabled: false }] },
+      { method: "requestUpgrade", args: [] },
+      { method: "putSettings", args: [{ updatePolicy: "manual" }] }
     ]);
     expect(page.byTestId("stack-notice").textContent).toContain("Update policy saved");
   });
 
   it("changing an enabled backend's size sends the tier with it enabled", async () => {
     const page = await mount();
-    typeInto(page.byTestId("stack-operator-token") as HTMLInputElement, "tok");
-    await settle();
     const size = page.byTestId("stack-size-argo-events") as HTMLSelectElement;
     size.value = "large";
     fire(size, new Event("change", { bubbles: true }));
     await settle();
     expect(calls.find((c) => c.method === "putBackend")?.args).toEqual([
       "argo-events",
-      { enabled: true, sizeTier: "large" },
-      "tok"
+      { enabled: true, sizeTier: "large" }
     ]);
-    // A disabled backend's size cannot be changed from here: there is nothing running to size.
     expect((page.byTestId("stack-size-argocd") as HTMLSelectElement).disabled).toBe(true);
   });
 
-  it("the diagnostics download goes through the SDK with the credential", async () => {
+  it("purge is offered only for a disabled backend, and only fires once its name is retyped exactly", async () => {
+    const page = await mount();
+    expect(page.container.querySelector('[data-testid="stack-purge-argo-events"]')).toBeNull();
+    page.click("stack-purge-argocd");
+    await settle();
+    const confirm = page.byTestId("stack-purge-confirm-argocd") as HTMLInputElement;
+    expect((page.byTestId("stack-purge-go-argocd") as HTMLButtonElement).disabled).toBe(true);
+    typeInto(confirm, "ArgoCD");
+    await settle();
+    expect((page.byTestId("stack-purge-go-argocd") as HTMLButtonElement).disabled).toBe(true);
+    typeInto(confirm, "argocd");
+    await settle();
+    page.click("stack-purge-go-argocd");
+    await settle();
+    expect(calls.find((c) => c.method === "purge")?.args).toEqual(["argocd"]);
+  });
+
+  it("the diagnostics download goes through the SDK", async () => {
     const created: string[] = [];
     URL.createObjectURL = vi.fn(() => {
       created.push("blob");
@@ -219,11 +254,9 @@ describe("Admin › Stack", () => {
     }) as unknown as typeof URL.createObjectURL;
     URL.revokeObjectURL = vi.fn() as unknown as typeof URL.revokeObjectURL;
     const page = await mount();
-    typeInto(page.byTestId("stack-operator-token") as HTMLInputElement, "tok");
-    await settle();
     page.click("stack-diagnostics");
     await settle();
-    expect(calls.find((c) => c.method === "diagnostics")?.args).toEqual(["tok"]);
+    expect(calls.find((c) => c.method === "diagnostics")?.args).toEqual([]);
     expect(created).toEqual(["blob"]);
   });
 
@@ -241,8 +274,6 @@ describe("Admin › Stack", () => {
         } as never
       })
     );
-    typeInto(page.byTestId("stack-operator-token") as HTMLInputElement, "wrong");
-    await settle();
     page.click("stack-toggle-gitea");
     await settle();
     expect(page.byTestId("stack-refusal").textContent).toContain(
@@ -280,7 +311,6 @@ describe("Admin › Stack", () => {
 
   it("never touches the controller's two doors", async () => {
     const page = await mount();
-    typeInto(page.byTestId("stack-operator-token") as HTMLInputElement, "tok");
     page.click("stack-upgrade");
     await settle();
     expect(calls.some((c) => c.method === "spec" || c.method === "putStatus")).toBe(false);

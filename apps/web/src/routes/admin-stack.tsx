@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, KeyRound, RefreshCw, ServerCog } from "lucide-react";
+import { Download, RefreshCw, ServerCog, ShieldCheck } from "lucide-react";
 import {
   StackBackendSchema,
   type StackBackend,
@@ -16,7 +16,7 @@ import { cn, focusRing } from "../lib/utils";
 import { Alert } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Notice } from "../components/ui/notice";
 import { PageHeader } from "../components/ui/page-header";
@@ -36,12 +36,11 @@ import { formatRelative } from "./admin-dependencies";
  * ADMIN › STACK (M29.4, ADR-0058) — the Standard Stack CommanderSCP installs and runs: each
  * backend's desired state and what the stack controller last reported about it.
  *
- * Reading is an ordinary session call. Every change (enable, disable, size, upgrade, the update
- * policy, the diagnostics download) needs the DEPLOYMENT OPERATOR CREDENTIAL as well, because it
- * installs or removes cluster software for every org on the instance. The credential is typed into
- * this page, held in component state for the life of the page and nothing longer — never storage,
- * never a cookie — and sent only as the `x-scp-operator-token` header of those calls, through the
- * SDK like everything else.
+ * Reading is an ordinary session call. Every change (enable, disable, size, purge, upgrade, the
+ * update policy, the diagnostics download) needs the INSTANCE-OPERATOR ROLE on the same session —
+ * owner decision 2026-09-25: authority is checked server-side against the normal login, and this
+ * page never asks for, holds or sends a deployment credential. A user without the role sees the
+ * stack and is told why the switches are off.
  *
  * Honesty (design spec §1.5): an enabled backend the controller has not reported is "pending", in
  * the amber-dashed unknown tone, never a guessed phase; a controller that has stopped reporting is
@@ -143,19 +142,70 @@ function PhaseCell({ b }: { b: StackBackendView }): React.JSX.Element {
   );
 }
 
+function PurgeControl({
+  backend,
+  busy,
+  onPurge
+}: {
+  backend: StackBackend;
+  busy: boolean;
+  onPurge: (backend: StackBackend) => void;
+}): React.JSX.Element {
+  // Typed-name confirm (design-system idiom 1): the operator retypes the backend's own name.
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  if (!open) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        data-testid={`stack-purge-${backend}`}
+        disabled={busy}
+        title="Delete this disabled backend's retained data (volumes, generated secrets)"
+        onClick={() => setOpen(true)}
+      >
+        Purge data
+      </Button>
+    );
+  }
+  return (
+    <span className="flex items-center justify-end gap-2">
+      <Input
+        aria-label={`Type ${backend} to confirm`}
+        placeholder={backend}
+        className="h-8 w-40 text-xs"
+        data-testid={`stack-purge-confirm-${backend}`}
+        value={typed}
+        onChange={(e) => setTyped(e.target.value)}
+      />
+      <Button
+        size="sm"
+        variant="destructive"
+        data-testid={`stack-purge-go-${backend}`}
+        disabled={busy || typed !== backend}
+        onClick={() => onPurge(backend)}
+      >
+        Delete data
+      </Button>
+    </span>
+  );
+}
+
 function BackendRow({
   b,
-  token,
+  canChange,
   busy,
-  onWrite
+  onWrite,
+  onPurge
 }: {
   b: StackBackendView;
-  token: string;
+  canChange: boolean;
   busy: boolean;
   onWrite: (backend: StackBackend, enabled: boolean, sizeTier?: StackSizeTier) => void;
+  onPurge: (backend: StackBackend) => void;
 }): React.JSX.Element {
-  const noToken = token === "";
   const s = b.status;
+  const why = canChange ? undefined : NO_ROLE;
   return (
     <TableRow data-testid={`stack-row-${b.backend}`}>
       <TableCell className="font-medium text-slate-900">{DISPLAY[b.backend]}</TableCell>
@@ -177,8 +227,8 @@ function BackendRow({
           className={selectClass}
           data-testid={`stack-size-${b.backend}`}
           value={b.sizeTier}
-          disabled={noToken || busy || !b.enabled}
-          title={noToken ? "Enter the operator credential to change the stack" : undefined}
+          disabled={!canChange || busy || !b.enabled}
+          title={why}
           onChange={(e) => onWrite(b.backend, b.enabled, e.target.value as StackSizeTier)}
         >
           {TIERS.map((t) => (
@@ -205,20 +255,35 @@ function BackendRow({
         ) : null}
       </TableCell>
       <TableCell className="text-right">
-        <Button
-          size="sm"
-          variant={b.enabled ? "outline" : "default"}
-          data-testid={`stack-toggle-${b.backend}`}
-          disabled={noToken || busy}
-          title={noToken ? "Enter the operator credential to change the stack" : undefined}
-          onClick={() => onWrite(b.backend, !b.enabled)}
-        >
-          {b.enabled ? "Disable" : "Enable"}
-        </Button>
+        <span className="flex items-center justify-end gap-2">
+          {!b.enabled && canChange ? (
+            <PurgeControl backend={b.backend} busy={busy} onPurge={onPurge} />
+          ) : null}
+          <Button
+            size="sm"
+            variant={b.enabled ? "outline" : "default"}
+            data-testid={`stack-toggle-${b.backend}`}
+            disabled={!canChange || busy}
+            title={
+              why ??
+              (b.enabled
+                ? "Disable: workloads are removed; volumes and generated secrets are kept until you purge them"
+                : undefined)
+            }
+            onClick={() => onWrite(b.backend, !b.enabled)}
+          >
+            {b.enabled ? "Disable" : "Enable"}
+          </Button>
+        </span>
       </TableCell>
     </TableRow>
   );
 }
+
+const NO_ROLE =
+  "Changing the stack needs the instance-operator role — ask an instance operator to grant it";
+
+export const instanceOperatorSelfKey = (): unknown[] => ["instance-operator", "self"];
 
 export function AdminStackPage(): React.JSX.Element {
   const queryClient = useQueryClient();
@@ -227,11 +292,15 @@ export function AdminStackPage(): React.JSX.Element {
     queryFn: () => client.stack.get(),
     refetchInterval: 10_000
   });
-  const [token, setToken] = useState("");
+  const role = useQuery({
+    queryKey: instanceOperatorSelfKey(),
+    queryFn: () => client.instanceOperators.self()
+  });
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const now = Date.now();
+  const canChange = role.data === true;
 
   async function write(what: string, call: () => Promise<StackView | void>): Promise<void> {
     setBusy(true);
@@ -253,12 +322,17 @@ export function AdminStackPage(): React.JSX.Element {
       sizeTier
         ? `${DISPLAY[backend]} set to ${sizeTier}.`
         : `${DISPLAY[backend]} ${enabled ? "enabled" : "disabled"}.`,
-      () => client.stack.putBackend(backend, { enabled, ...(sizeTier ? { sizeTier } : {}) }, token)
+      () => client.stack.putBackend(backend, { enabled, ...(sizeTier ? { sizeTier } : {}) })
+    );
+
+  const onPurge = (backend: StackBackend) =>
+    void write(`${DISPLAY[backend]}'s retained data will be deleted.`, () =>
+      client.stack.purge(backend)
     );
 
   async function downloadDiagnostics(): Promise<void> {
     await write("Diagnostics downloaded.", async () => {
-      const bundle = await client.stack.diagnostics(token);
+      const bundle = await client.stack.diagnostics();
       const url = URL.createObjectURL(
         new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" })
       );
@@ -271,7 +345,6 @@ export function AdminStackPage(): React.JSX.Element {
   }
 
   const view = stack.data;
-  const noToken = token === "";
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -284,11 +357,13 @@ export function AdminStackPage(): React.JSX.Element {
               size="sm"
               icon={RefreshCw}
               data-testid="stack-upgrade"
-              disabled={noToken || busy}
-              title="Roll every enabled backend onto this release's versions — approves a held upgrade or retries one that was rolled back"
-              onClick={() =>
-                void write("Upgrade requested.", () => client.stack.requestUpgrade(token))
+              disabled={!canChange || busy}
+              title={
+                canChange
+                  ? "Roll every enabled backend onto this release's versions — approves a held upgrade or retries one that was rolled back"
+                  : NO_ROLE
               }
+              onClick={() => void write("Upgrade requested.", () => client.stack.requestUpgrade())}
             >
               Upgrade
             </Button>
@@ -297,7 +372,8 @@ export function AdminStackPage(): React.JSX.Element {
               size="sm"
               icon={Download}
               data-testid="stack-diagnostics"
-              disabled={noToken || busy}
+              disabled={!canChange || busy}
+              title={canChange ? undefined : NO_ROLE}
               onClick={() => void downloadDiagnostics()}
             >
               Diagnostics
@@ -306,31 +382,14 @@ export function AdminStackPage(): React.JSX.Element {
         }
       />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <KeyRound className="size-4 text-slate-400" aria-hidden="true" />
-            Operator credential
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          <Input
-            type="password"
-            autoComplete="off"
-            placeholder="scp_op_…"
-            aria-label="Operator credential"
-            data-testid="stack-operator-token"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-          />
-          <p
-            className="text-xs text-slate-500"
-            title="Changes here install or remove cluster software for every org on this instance, which no org role can grant. The credential stays in this page's memory and is sent only with those calls."
-          >
-            Needed to change the stack. Held in this page only, never stored.
-          </p>
-        </CardContent>
-      </Card>
+      {role.isSuccess && !canChange ? (
+        <Alert tone="info" data-testid="stack-no-role">
+          <ShieldCheck className="mr-1 inline size-4" aria-hidden="true" />
+          You can see the stack. Changing it needs the instance-operator role, because it installs
+          and removes software for every organization on this instance — an instance operator grants
+          it.
+        </Alert>
+      ) : null}
 
       {refusal !== null && (
         <Alert tone="danger" data-testid="stack-refusal">
@@ -368,7 +427,14 @@ export function AdminStackPage(): React.JSX.Element {
                 {StackBackendSchema.options.map((backend) => {
                   const b = view.backends.find((x) => x.backend === backend);
                   return b ? (
-                    <BackendRow key={backend} b={b} token={token} busy={busy} onWrite={onWrite} />
+                    <BackendRow
+                      key={backend}
+                      b={b}
+                      canChange={canChange}
+                      busy={busy}
+                      onWrite={onWrite}
+                      onPurge={onPurge}
+                    />
                   ) : null;
                 })}
               </TableBody>
@@ -381,13 +447,10 @@ export function AdminStackPage(): React.JSX.Element {
               className={selectClass}
               data-testid="stack-update-policy"
               value={view.settings.updatePolicy}
-              disabled={noToken || busy}
+              disabled={!canChange || busy}
               onChange={(e) =>
                 void write("Update policy saved.", () =>
-                  client.stack.putSettings(
-                    { updatePolicy: e.target.value as StackUpdatePolicy },
-                    token
-                  )
+                  client.stack.putSettings({ updatePolicy: e.target.value as StackUpdatePolicy })
                 )
               }
             >

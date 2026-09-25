@@ -26,6 +26,7 @@ function view(): StackView {
       backend,
       enabled: backend === "argo-events",
       sizeTier: "small" as const,
+      purgeGeneration: 0,
       status:
         backend === "argo-events"
           ? {
@@ -61,6 +62,22 @@ vi.mock("@scp/sdk", () => {
       diagnostics: async (...args: unknown[]) => (
         calls.push({ method: "diagnostics", args }),
         { generatedAt: "now", stack: view(), backends: [] }
+      ),
+      purge: async (...args: unknown[]) => (calls.push({ method: "purge", args }), view())
+    };
+    instanceOperators = {
+      list: async (...args: unknown[]) => (
+        calls.push({ method: "operators.list", args }),
+        { items: [], callerHoldsRole: true }
+      ),
+      grant: async (...args: unknown[]) => (
+        calls.push({ method: "operators.grant", args }),
+        { id: "g1", username: "alice", grantedAt: "now" }
+      ),
+      revoke: async (...args: unknown[]) => (calls.push({ method: "operators.revoke", args }), {}),
+      auditEvents: async (...args: unknown[]) => (
+        calls.push({ method: "operators.audit", args }),
+        { items: [], chainValid: true, brokenAt: null }
       )
     };
   }
@@ -110,7 +127,7 @@ describe("scp stack", () => {
     const group = (await program()).commands.find((c) => c.name() === "stack");
     expect(group, "`scp stack` is missing").toBeDefined();
     expect(group!.commands.map((c) => c.name()).sort()).toEqual(
-      ["diagnostics", "disable", "enable", "status", "updates", "upgrade"].sort()
+      ["diagnostics", "disable", "enable", "purge", "status", "updates", "upgrade"].sort()
     );
   });
 
@@ -147,12 +164,46 @@ describe("scp stack", () => {
     expect(calls).toEqual([]);
   });
 
-  it("every change refuses without an operator credential, and says which one", async () => {
+  it("without a credential a change forwards NONE — the session's instance-operator role decides", async () => {
     delete process.env.SCP_OPERATOR_TOKEN;
-    await expect(run(["enable", "gitea"])).rejects.toThrow(/deployment operator credential/);
-    await expect(run(["upgrade"])).rejects.toThrow(/deployment operator credential/);
-    await expect(run(["diagnostics"])).rejects.toThrow(/deployment operator credential/);
+    await run(["enable", "gitea"]);
+    await run(["upgrade"]);
+    expect(calls).toEqual([
+      { method: "putBackend", args: ["gitea", { enabled: true }, undefined] },
+      { method: "requestUpgrade", args: [undefined] }
+    ]);
+  });
+
+  it("purge refuses without --i-understand-data-loss, before any call", async () => {
+    await expect(run(["purge", "gitea"])).rejects.toThrow(/--i-understand-data-loss/);
     expect(calls).toEqual([]);
+    await run(["purge", "gitea", "--i-understand-data-loss"]);
+    expect(calls).toEqual([{ method: "purge", args: ["gitea", "op-token"] }]);
+  });
+
+  it("scp instance-operator grant/revoke/list/audit reach their SDK verbs", async () => {
+    const p = await program();
+    const grp = p.commands.find((c) => c.name() === "instance-operator");
+    expect(grp!.commands.map((c) => c.name()).sort()).toEqual(["audit", "grant", "list", "revoke"]);
+    await p.parseAsync([
+      "node",
+      "scp",
+      "instance-operator",
+      "grant",
+      "--org",
+      "o1",
+      "--user",
+      "u1"
+    ]);
+    await (await program()).parseAsync(["node", "scp", "instance-operator", "revoke", "g1"]);
+    await (await program()).parseAsync(["node", "scp", "instance-operator", "list"]);
+    await (await program()).parseAsync(["node", "scp", "instance-operator", "audit"]);
+    expect(calls.map((c) => [c.method, c.args])).toEqual([
+      ["operators.grant", [{ orgId: "o1", userId: "u1" }, "op-token"]],
+      ["operators.revoke", ["g1", "op-token"]],
+      ["operators.list", ["op-token"]],
+      ["operators.audit", ["op-token"]]
+    ]);
   });
 
   it("upgrade and updates reach their verbs", async () => {
