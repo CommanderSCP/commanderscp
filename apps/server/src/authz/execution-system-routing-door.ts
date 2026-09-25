@@ -100,7 +100,7 @@ export async function assertStackRegistrationWrite(
     orgId: string;
     typeId: string;
     objectId: string | undefined;
-    stackManagedWrite: boolean | undefined;
+    stackManagedWrite?: boolean | undefined;
     act: "create" | "update" | "delete" | "publish";
     subject: string;
   }

@@ -103,7 +103,6 @@ export async function publishDomainLocalObject(
     orgId: input.orgId,
     typeId: input.typeId,
     objectId: existing.id,
-    stackManagedWrite: undefined,
     act: "publish",
     subject: `${input.typeId} '${existing.id}'`
   });
