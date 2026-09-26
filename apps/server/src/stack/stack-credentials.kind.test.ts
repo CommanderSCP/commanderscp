@@ -234,14 +234,29 @@ describe("M29.5 a registry token entered through SCP lets a REAL build push (kin
     }
   });
 
+  // Everything this suite enabled is removed again, THROUGH THE API, before the next suite: the
+  // suites share one cluster, one controller namespace and (one fork) one database, and a backend
+  // left enabled here was measured to make the M29.4 suite roll it onto an image that is not
+  // retargeted there — ImagePullBackOff, a fall back, and its own backend's turn timed out.
   afterAll(async () => {
-    // The backends are left installed for the wiring suite that follows in the same job (it
-    // enables all four and removes them in its own afterAll); the controller and scpd stop here.
+    if (people) {
+      for (const b of ["argo-workflows", "gitea"] as const) {
+        await people.stack.putBackend(b, { enabled: false }, OPERATOR_TOKEN).catch(() => undefined);
+      }
+      await waitFor("argo-workflows and gitea removed", 540_000, async () => {
+        const v = await people.stack.get();
+        return v.backends
+          .filter((b) => b.backend === "argo-workflows" || b.backend === "gitea")
+          .every((b) => (b.status?.phase ?? "disabled") === "disabled")
+          ? true
+          : undefined;
+      }).catch((err) => console.warn(String(err)));
+    }
     await controller?.stop();
     await server?.close();
     await admin?.end();
     if (workdir) await rm(workdir, { recursive: true, force: true });
-  });
+  }, 600_000);
 
   it("the token is entered through the API alone, lands in scp-build-registry, a real scp-build-image-v1 run pushes with it, and the value is in no SCP table, log or audit row", async () => {
     const giteaView = await wiredAndReady("gitea");
