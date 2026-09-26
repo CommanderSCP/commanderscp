@@ -162,6 +162,41 @@ vi.mock("../lib/client", () => ({
         calls.push({ method: "diagnostics", args });
         return { generatedAt: "2026-09-24T12:00:00.000Z", stack: current, backends: [] };
       },
+      /** M29.5 — credentials through SCP (write-only). */
+      credentials: async (...args: unknown[]) => {
+        calls.push({ method: "credentials", args });
+        return credentialsView(credState);
+      },
+      setCredential: async (...args: unknown[]) => {
+        calls.push({ method: "setCredential", args });
+        credState = "set";
+        return credentialsView("set").secrets[0]!.keys[0]!;
+      },
+      deleteCredential: async (...args: unknown[]) => {
+        calls.push({ method: "deleteCredential", args });
+        return credentialsView().secrets[0]!.keys[0]!;
+      },
+      putWorkloadIdentity: async (...args: unknown[]) => {
+        calls.push({ method: "putWorkloadIdentity", args });
+        return credentialsView(credState);
+      },
+      deleteWorkloadIdentity: async (...args: unknown[]) => {
+        calls.push({ method: "deleteWorkloadIdentity", args });
+        return credentialsView(credState);
+      },
+      /** M29.5: the controller's credential doors. A page must never reach them. */
+      putSealingKey: async () => {
+        calls.push({ method: "putSealingKey", args: [] });
+        throw new Error("the browser must never publish a sealing key");
+      },
+      credentialDeliveries: async () => {
+        calls.push({ method: "credentialDeliveries", args: [] });
+        throw new Error("the browser must never read sealed deliveries");
+      },
+      ackCredentialDelivery: async () => {
+        calls.push({ method: "ackCredentialDelivery", args: [] });
+        throw new Error("the browser must never confirm a delivery");
+      },
       /** The controller's doors. A page must never reach them. */
       spec: async () => {
         calls.push({ method: "spec", args: [] });
@@ -185,6 +220,44 @@ vi.mock("../lib/client", () => ({
 }));
 
 const { AdminStackPage } = await import("./admin-stack");
+
+/** M29.5: the credentials read model — metadata only (there is no value to return). */
+function credentialsView(state: "unset" | "set" = "unset") {
+  const key = (k: string) => ({
+    backend: "argo-workflows" as const,
+    secretName: "scp-build-registry" as const,
+    key: k,
+    description: `the ${k}`,
+    state,
+    pendingOp: null,
+    requestedBy: null,
+    requestedAt: null,
+    deliveredAt: null,
+    error: null
+  });
+  return {
+    secrets: [
+      {
+        backend: "argo-workflows" as const,
+        secretName: "scp-build-registry" as const,
+        purpose: "builds",
+        keys: [key("registryPassword"), key("registryHost")]
+      }
+    ],
+    workloadIdentities: [
+      {
+        backend: "argo-workflows" as const,
+        serviceAccount: "scp-infra-plan" as const,
+        description: "plan pods",
+        binding: null,
+        declaredBy: null,
+        declaredAt: null
+      }
+    ],
+    sealingKey: { published: true, publishedAt: new Date(NOW - 5_000).toISOString() }
+  };
+}
+let credState: "unset" | "set" = "unset";
 
 async function settle(): Promise<void> {
   await act(async () => {
@@ -212,6 +285,7 @@ afterEach(() => {
   calls.length = 0;
   current = view();
   holdsRole = true;
+  credState = "unset";
   vi.restoreAllMocks();
   document.body.innerHTML = "";
 });
@@ -219,8 +293,8 @@ afterEach(() => {
 describe("Admin › Stack", () => {
   it("reads the stack with the session alone, and shows every backend", async () => {
     const page = await mount();
-    // (With the role, the served-organizations panel reads its list too.)
-    expect(calls.map((c) => c.method).sort()).toEqual(["get", "orgs", "self"]);
+    // (With the role, the served-organizations panel and the credentials card read theirs too.)
+    expect(calls.map((c) => c.method).sort()).toEqual(["credentials", "get", "orgs", "self"]);
     for (const b of StackBackendSchema.options)
       expect(page.byTestId(`stack-row-${b}`)).toBeTruthy();
     expect(page.byTestId("stack-phase-argo-events").textContent).toBe("ready");
@@ -229,7 +303,12 @@ describe("Admin › Stack", () => {
 
   it("OWNER DECISION: the page has no credential field — nothing asks for, or holds, a deployment credential", async () => {
     const page = await mount();
-    expect(page.container.querySelector('input[type="password"]')).toBeNull();
+    // The only secret inputs are M29.5's backend credentials (a registry token, …), never an
+    // operator credential: each is inside the credentials card and named for a catalog key.
+    for (const input of page.container.querySelectorAll('input[type="password"]')) {
+      expect(input.getAttribute("data-testid")).toMatch(/^stack-credential-input-/);
+      expect(input.closest('[data-testid="stack-credentials"]')).not.toBeNull();
+    }
     expect(page.container.querySelector('[data-testid="stack-operator-token"]')).toBeNull();
     expect(page.html()).not.toMatch(/scp_op_|operator credential/i);
   });
@@ -266,7 +345,9 @@ describe("Admin › Stack", () => {
     expect(page.byTestId("stack-no-role").textContent).toContain("instance-operator role");
     page.click("stack-toggle-argocd");
     await settle();
-    expect(calls.filter((c) => !["get", "self", "orgs"].includes(c.method))).toEqual([]);
+    expect(calls.filter((c) => !["get", "self", "orgs", "credentials"].includes(c.method))).toEqual(
+      []
+    );
   });
 
   it("with the role, enable, disable, upgrade and the update policy go through their SDK verbs with NO credential", async () => {
@@ -281,12 +362,14 @@ describe("Admin › Stack", () => {
     policy.value = "manual";
     fire(policy, new Event("change", { bubbles: true }));
     await settle();
-    expect(calls.filter((c) => !["get", "self", "orgs"].includes(c.method))).toEqual([
-      { method: "putBackend", args: ["argocd", { enabled: true }] },
-      { method: "putBackend", args: ["argo-events", { enabled: false }] },
-      { method: "requestUpgrade", args: [] },
-      { method: "putSettings", args: [{ updatePolicy: "manual" }] }
-    ]);
+    expect(calls.filter((c) => !["get", "self", "orgs", "credentials"].includes(c.method))).toEqual(
+      [
+        { method: "putBackend", args: ["argocd", { enabled: true }] },
+        { method: "putBackend", args: ["argo-events", { enabled: false }] },
+        { method: "requestUpgrade", args: [] },
+        { method: "putSettings", args: [{ updatePolicy: "manual" }] }
+      ]
+    );
     expect(page.byTestId("stack-notice").textContent).toContain("Update policy saved");
   });
 
@@ -442,5 +525,60 @@ describe("Admin › Stack", () => {
       { method: "detachOrg", args: [ORG_A] },
       { method: "attachOrg", args: [id] }
     ]);
+  });
+
+  it("M29.5: a credential is entered through its SDK verb with NO operator credential, the input is cleared, and no value is ever shown", async () => {
+    const page = await mount();
+    const id = "scp-build-registry-registryPassword";
+    expect(page.byTestId(`stack-credential-state-${id}`).textContent).toBe("unset");
+    const input = page.byTestId(`stack-credential-input-${id}`) as HTMLInputElement;
+    expect(input.type).toBe("password");
+    expect(input.autocomplete).toBe("off");
+    typeInto(input, "gitea-push-TOKEN-123");
+    await settle();
+    page.click(`stack-credential-save-${id}`);
+    await settle();
+    await settle();
+    expect(calls.find((c) => c.method === "setCredential")?.args).toEqual([
+      { backend: "argo-workflows", secretName: "scp-build-registry", key: "registryPassword" },
+      "gitea-push-TOKEN-123"
+    ]);
+    expect((page.byTestId(`stack-credential-input-${id}`) as HTMLInputElement).value).toBe("");
+    expect(page.html()).not.toContain("gitea-push-TOKEN-123");
+    expect(page.byTestId("stack-notice").textContent).toContain("SCP keeps no copy");
+    // The controller's doors are never touched from a browser.
+    expect(
+      calls.filter((c) =>
+        ["putSealingKey", "credentialDeliveries", "ackCredentialDelivery"].includes(c.method)
+      )
+    ).toEqual([]);
+  });
+
+  it("M29.5: a workload identity is declared only with an identifier its provider's pattern accepts", async () => {
+    const page = await mount();
+    const id = "argo-workflows-scp-infra-plan";
+    const save = () => page.byTestId(`stack-identity-save-${id}`) as HTMLButtonElement;
+    typeInto(page.byTestId(`stack-identity-input-${id}`) as HTMLInputElement, "not-an-arn");
+    await settle();
+    expect(save().disabled).toBe(true);
+    typeInto(
+      page.byTestId(`stack-identity-input-${id}`) as HTMLInputElement,
+      "arn:aws:iam::123456789012:role/scp-plan"
+    );
+    await settle();
+    page.click(`stack-identity-save-${id}`);
+    await settle();
+    expect(calls.find((c) => c.method === "putWorkloadIdentity")?.args).toEqual([
+      { backend: "argo-workflows", serviceAccount: "scp-infra-plan" },
+      { provider: "aws-irsa", identifier: "arn:aws:iam::123456789012:role/scp-plan" }
+    ]);
+  });
+
+  it("M29.5: without the role there is no credentials card and nothing asks for one", async () => {
+    holdsRole = false;
+    const page = await mount();
+    expect(page.container.querySelector('[data-testid="stack-credentials"]')).toBeNull();
+    expect(page.container.querySelector('input[type="password"]')).toBeNull();
+    expect(calls.some((c) => c.method === "credentials")).toBe(false);
   });
 });

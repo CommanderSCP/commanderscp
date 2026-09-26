@@ -9,11 +9,13 @@ import type { ControllerDeps, StackApi } from "./reconcile.js";
 import { StateStore } from "./state.js";
 import { deriveBackendValues } from "./values.js";
 import { unwireBackend, wireBackend } from "./wiring.js";
+import { credentialNeeds, deliverCredentials } from "./credentials.js";
 
 /**
  * Assembling a controller from its configuration. The ONLY API client it builds is below, and it
- * uses exactly four operations — the spec read, the status write, and (M29.2) the wiring hand-off
- * and its withdrawal — with the install-time credential and no session:
+ * uses exactly seven operations — the spec read, the status write, (M29.2) the wiring hand-off
+ * and its withdrawal, and (M29.5) the sealing key, the sealed credential deliveries and their
+ * confirmation — with the install-time credential and no session:
  * `controller-inputs.test.ts` holds the controller's sources to that.
  */
 
@@ -23,7 +25,11 @@ export function stackApiFor(baseUrl: string, operatorCredential: string): StackA
     spec: () => client.stack.spec(operatorCredential),
     putStatus: (req) => client.stack.putStatus(req, operatorCredential),
     putWiring: (backend, req) => client.stack.putWiring(backend, req, operatorCredential),
-    deleteWiring: (backend) => client.stack.deleteWiring(backend, operatorCredential)
+    deleteWiring: (backend) => client.stack.deleteWiring(backend, operatorCredential),
+    putSealingKey: (req) => client.stack.putSealingKey(req, operatorCredential),
+    credentialDeliveries: () => client.stack.credentialDeliveries(operatorCredential),
+    ackCredentialDelivery: (id, req) =>
+      client.stack.ackCredentialDelivery(id, req, operatorCredential)
   };
 }
 
@@ -136,7 +142,37 @@ export async function buildControllerDeps(
     log: (line) => console.log(`[scp-stackd] ${line}`),
     ...overrides
   };
-  return installWiringHooks(deps, { http: nodeBackendHttp(), scpPodLabels: config.scpPodLabels });
+  installWiringHooks(deps, { http: nodeBackendHttp(), scpPodLabels: config.scpPodLabels });
+  return installCredentialHooks(deps, config.stackdNamespace);
+}
+
+/**
+ * M29.5 (ADR-0063): credentials through SCP. Every tick delivers the sealed envelopes scpd holds
+ * into the backends' own Secrets, and a ready backend reports what it still needs entered. A hook
+ * an override already set is kept. (`credentials.test.ts` drives the installed hook and watches the
+ * Secret get written — a reference to `deliverCredentials` that is never called would pass a
+ * census, not that test.)
+ */
+export function installCredentialHooks(
+  deps: ControllerDeps,
+  stackdNamespace: string
+): ControllerDeps {
+  deps.credentials ??= {
+    deliver: (recordedKeySha256) =>
+      deliverCredentials(
+        {
+          api: deps.api,
+          kube: deps.kube,
+          release: deps.release,
+          stackdNamespace,
+          log: deps.log,
+          ...(deps.now ? { now: deps.now } : {})
+        },
+        recordedKeySha256
+      ),
+    needs: (backend) => credentialNeeds(deps, backend)
+  };
+  return deps;
 }
 
 /**

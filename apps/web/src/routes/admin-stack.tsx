@@ -32,6 +32,7 @@ import {
 } from "../components/ui/table";
 import { QueryErrorNotice, queryErrorMessage } from "../components/query-error";
 import { formatRelative } from "./admin-dependencies";
+import { StackCredentials } from "./admin-stack-credentials";
 
 /**
  * ADMIN › STACK (M29.4, ADR-0058) — the Standard Stack CommanderSCP installs and runs: each
@@ -51,6 +52,10 @@ import { formatRelative } from "./admin-dependencies";
  * token and TLS trust are handed over — with a Rotate action, and the organizations the stack
  * serves (its wired backends are registered in each). Serving another org is an instance
  * decision: every served org drives the same scoped backend accounts.
+ *
+ * M29.5 (ADR-0063): the Credentials card (admin-stack-credentials.tsx) — a registry token, cloud
+ * credentials, a git token, entered once and written by the controller into the backend's Secret;
+ * never shown back, because there is nothing to read them from.
  */
 
 export const stackKey = (): unknown[] => ["stack"];
@@ -466,7 +471,8 @@ export function AdminStackPage(): React.JSX.Element {
   const now = Date.now();
   const canChange = role.data === true;
 
-  async function write(what: string, call: () => Promise<StackView | void>): Promise<void> {
+  /** One audited write; resolves whether it succeeded (the credentials form clears on true). */
+  async function write(what: string, call: () => Promise<StackView | void>): Promise<boolean> {
     setBusy(true);
     setRefusal(null);
     setNotice(null);
@@ -474,8 +480,10 @@ export function AdminStackPage(): React.JSX.Element {
       const result = await call();
       if (result) queryClient.setQueryData(stackKey(), result);
       setNotice(what);
+      return true;
     } catch (err) {
       setRefusal(refusalOf(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -647,6 +655,8 @@ export function AdminStackPage(): React.JSX.Element {
             </span>
           </div>
           {canChange ? <ServedOrgs busy={busy} onChange={onOrgs} /> : null}
+          {/* M29.5 (ADR-0063): credentials through SCP — instance authority, write-only. */}
+          {canChange ? <StackCredentials busy={busy} write={write} /> : null}
         </>
       )}
     </div>

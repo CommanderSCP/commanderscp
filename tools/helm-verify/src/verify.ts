@@ -830,6 +830,34 @@ function verifyRpmCatalogTemplate(): void {
     rpmFetch !== undefined && JSON.stringify(rpmFetch) === JSON.stringify(imageFetch),
     `[${label}] fetch-source differs from scp-build-image-v1's. The checkout-by-commit is the property that ties a published artifact to a revision; the two copies must stay identical`
   );
+
+  // M29.5 (ADR-0063): THE PUSH CREDENTIAL IS BOUND TO ONE HOST in both build templates — the
+  // destination is SCP-assembled from an org's registry object, so an unbound token goes wherever
+  // that object points. Each container mounts `registryHost`, and the image script refuses a
+  // mismatched host BEFORE the credential is written into its docker config.
+  type EnvRef = { name: string; valueFrom?: { secretKeyRef?: { name?: string; key?: string } } };
+  const imageBuild = imageSpec.templates?.[0]?.container as
+    { env?: EnvRef[]; args?: string[] } | undefined;
+  for (const [which, c] of [
+    ["scp-build-image-v1", imageBuild],
+    [label, build as { env?: EnvRef[] } | undefined]
+  ] as const) {
+    const ref = c?.env?.find((e) => e.name === "REGISTRY_HOST")?.valueFrom?.secretKeyRef;
+    assert(
+      ref?.name === "scp-build-registry" && ref.key === "registryHost",
+      `[${which}] does not mount REGISTRY_HOST from scp-build-registry/registryHost — its push credential is not bound to a host`
+    );
+  }
+  const script = imageBuild?.args?.[0] ?? "";
+  const refusal = script.indexOf('[ "$host" != "$REGISTRY_HOST" ]');
+  const written = script.indexOf("config.json");
+  assert(
+    refusal > 0 && written > refusal,
+    "[scp-build-image-v1] the REGISTRY_HOST refusal must come before the push credential is written to $DOCKER_CONFIG"
+  );
+  console.log(
+    "  both build templates bind the push credential to registryHost; the image script refuses a mismatched host before writing the credential"
+  );
   console.log(
     "  absent until builderImage is set; fully hardened (no relaxation); positional args match build-rpm.sh; required params carry no default; fetch-source identical to scp-build-image-v1"
   );

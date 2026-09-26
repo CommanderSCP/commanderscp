@@ -30,6 +30,17 @@ if [ -z "${REGISTRY_USERNAME:-}" ] || [ -z "${REGISTRY_PASSWORD:-}" ]; then
   exit 2
 fi
 
+# THE CREDENTIAL IS BOUND TO ONE HOST (M29.5, ADR-0063): the upload URL is assembled by SCP from a
+# registry object an organization writes, so a `registryHost` entered with the token is the only
+# host it is presented to. Unset (a Secret made before M29.5), a warning — never a silent send.
+upload_authority=$(printf '%s' "$upload_url" | sed -e 's,^[a-zA-Z]*://,,' -e 's,/.*$,,')
+if [ -n "${REGISTRY_HOST:-}" ] && [ "$upload_authority" != "$REGISTRY_HOST" ]; then
+  echo "the package-registry credential is bound to ${REGISTRY_HOST}, and this upload goes to" >&2
+  echo "${upload_authority} — refusing to present it there" >&2
+  exit 2
+fi
+[ -n "${REGISTRY_HOST:-}" ] || echo "warning: the package-registry credential is not bound to a host (set registryHost through SCP)" >&2
+
 spec="${src}/${spec_rel}"
 [ -f "$spec" ] || {
   echo "no ${spec_rel} in this repository at ${commit}. Set the component's properties.rpmSpec to" >&2

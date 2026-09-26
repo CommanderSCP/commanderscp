@@ -215,6 +215,9 @@ function rig(): Rig {
         throw new Error("unused");
       },
       putStatus: async () => undefined,
+      putSealingKey: async () => undefined,
+      credentialDeliveries: async () => ({ items: [] }),
+      ackCredentialDelivery: async () => undefined,
       putWiring: async (backend, req) => {
         events.push(`putWiring ${backend}`);
         handoffs.push({ backend, req: structuredClone(req) });

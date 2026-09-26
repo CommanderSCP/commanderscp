@@ -1,4 +1,9 @@
 import { z } from "zod";
+import { InstanceActorSchema, Sha256HexSchema } from "./stack-primitives.js";
+import { StackWorkloadIdentitySpecSchema } from "./stack-credentials.js";
+
+// Defined in stack-primitives.ts so stack-credentials.ts can use them without an import cycle.
+export { InstanceActorSchema, Sha256HexSchema, type InstanceActor } from "./stack-primitives.js";
 
 /**
  * THE STANDARD STACK'S DESIRED STATE AND STATUS (M29.4, ADR-0058, charter "Managed Standard Stack").
@@ -59,7 +64,10 @@ export const StackNeedCodeSchema = z.enum([
   "state-integrity",
   /** M29.2: the backend is healthy but its wiring into SCP (scoped token, TLS trust, egress,
    *  registration) did not complete; the message says which step and why. */
-  "wiring"
+  "wiring",
+  /** M29.5: a credential the backend's catalog needs has not been entered through SCP (or its
+   *  delivery failed); the message names the Secret and key, never a value. */
+  "credentials"
 ]);
 export type StackNeedCode = z.infer<typeof StackNeedCodeSchema>;
 
@@ -100,9 +108,6 @@ export type StackSettings = z.infer<typeof StackSettingsSchema>;
 
 /** Everything the controller reads — and the ONLY thing it reads from the API. One entry per
  *  backend, always all of them (an absent row is `enabled: false, sizeTier: small`). */
-/** A sha256, lowercase hex. The only string the controller's input carries: it can only be
- *  COMPARED against bytes the controller holds, never rendered into anything. */
-export const Sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /** The hashes of the controller's own state as it last reported them — kept on the scpd side so a
  *  last-good set or an inventory rewritten in the cluster is refused rather than applied or pruned. */
@@ -127,7 +132,15 @@ export const StackSpecDocumentSchema = z.object({
   settings: StackSettingsSchema,
   backends: z.array(StackBackendSpecSchema),
   integrity: z.array(StackBackendIntegritySchema),
-  wiring: z.array(StackBackendWiringSpecSchema)
+  wiring: z.array(StackBackendWiringSpecSchema),
+  /** M29.5: the sha256 of the sealing key scpd holds for this controller (null until it has
+   *  published one) — compared with the controller's own key, so a missing or stale one is
+   *  re-published. Never a key to use: the controller seals nothing. */
+  credentialSealingKeySha256: Sha256HexSchema.nullable(),
+  /** M29.5: declared workload identities — an enumerated ServiceAccount, an enumerated provider and
+   *  that provider's pattern-bound identifier (an IAM role ARN, a Google service account email, a
+   *  GUID). The controller sets the provider's annotation on that ServiceAccount. */
+  workloadIdentities: z.array(StackWorkloadIdentitySpecSchema)
 });
 export type StackSpecDocument = z.infer<typeof StackSpecDocumentSchema>;
 
@@ -310,19 +323,6 @@ export const StackDiagnosticsSchema = z.object({
 export type StackDiagnostics = z.infer<typeof StackDiagnosticsSchema>;
 
 // ---- INSTANCE OPERATORS (owner decision 2026-09-25: a role granted to a user) -------------------
-
-/** Who performed an instance-level act. */
-export const InstanceActorSchema = z.object({
-  /** `session-role`: a logged-in user holding the instance-operator role. `credential` /
-   *  `bootstrap-env-token`: a machine or CLI presenting an operator credential. `install`: the
-   *  install-time bootstrap grant. */
-  mechanism: z.enum(["session-role", "credential", "bootstrap-env-token", "install"]),
-  orgId: z.string().uuid().nullable(),
-  userId: z.string().uuid().nullable(),
-  username: z.string().nullable(),
-  credentialId: z.string().uuid().nullable()
-});
-export type InstanceActor = z.infer<typeof InstanceActorSchema>;
 
 // ---- THE ORGANIZATIONS THE STACK SERVES (M29.2) ------------------------------------------------
 

@@ -79,7 +79,29 @@ const MUST_HAVE_A_PRODUCTION_CALLER: Record<string, string> = {
     "refuses every writer but the stack at the object write choke point — the tenant re-point refusal",
   attachServedOrg: "is the instance operator's decision to serve another organization",
   detachServedOrg: "stops serving one",
-  listServedOrgs: "is the served-organizations read"
+  listServedOrgs: "is the served-organizations read",
+  // M29.5 (ADR-0063): credentials through SCP. Controller half, then scpd half. (In-file wiring —
+  // `deliverCredentials` calling `writeCredential`, `requestCredentialChange` calling
+  // `sealCredential` — is proved by deleting it: credentials.test.ts, the integration suite and
+  // the kind suite go red.)
+  deliverCredentials:
+    "is the controller's delivery step — open, write into the backend's Secret, confirm; with no caller every credential entered through SCP waits forever",
+  credentialNeeds: "is how the Stack page learns a ready backend still needs a credential",
+  applyWorkloadIdentities:
+    "turns a declared workload identity into the ServiceAccount's annotation; with no caller a declaration does nothing",
+  validWorkloadIdentities: "re-validates the declarations the controller reads from the spec",
+  registerStackCredentialRoutes:
+    "puts the write-only credential doors and the controller's three on the API",
+  requestCredentialChange:
+    "seals a value (or a removal) to the controller and stores only the envelope",
+  publishSealingKey:
+    "records the controller's public key; with no caller no value can ever be entered",
+  listPendingDeliveries: "is how the controller receives the sealed envelopes",
+  ackDelivery: "drops the envelope once the controller has written (or refused) it",
+  credentialsView: "is the metadata-only read model the Stack page and CLI show",
+  declareWorkloadIdentity: "is the workload-identity declaration door",
+  workloadIdentitySpecs: "hands the declarations to the controller in its spec",
+  registerStackCredentialCommands: "is `scp stack credential …` / `scp stack workload-identity …`"
 };
 
 const isTest = (p: string): boolean =>

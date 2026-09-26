@@ -70,7 +70,20 @@ export async function testOperatorDatabaseUrl(): Promise<string> {
   const admin = new pg.Pool({ connectionString: testDatabaseUrl(), max: 1 });
   try {
     const creds = runtimeCredentials(url);
-    await provisionOperatorRole(admin, creds.user, creds.password);
+    // The role is CLUSTER-global but each worker provisions it from its OWN database, where the
+    // provisioning advisory lock (per database) excludes nobody: two workers' first ALTER ROLE can
+    // race and one fails `tuple concurrently updated` (measured, M29.5, when a third file began
+    // calling this). Retried: the second attempt finds the role already LOGIN with the same
+    // derived password and takes the verify path.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await provisionOperatorRole(admin, creds.user, creds.password);
+        break;
+      } catch (err) {
+        if (attempt >= 5 || !/tuple concurrently updated/.test(String(err))) throw err;
+        await new Promise((r) => setTimeout(r, 50 * attempt));
+      }
+    }
   } finally {
     await admin.end();
   }
@@ -108,6 +121,8 @@ export async function buildTestServer(
      *  which bypasses grants and RLS; a test proving an operator write's grant must set this to a
      *  real `scp_operator` login (see `testOperatorDatabaseUrl`). */
     operatorDatabaseUrl?: string;
+    /** Every line the server logs, at trace level, goes here (M29.5's no-plaintext scan). */
+    logSink?: { write(line: string): unknown };
   } = {}
 ): Promise<TestServer> {
   const config = loadConfig({
@@ -130,7 +145,11 @@ export async function buildTestServer(
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
   const deps: AppDeps = { db, config };
-  const app = await buildApp(deps, { logger: process.env.SCP_TEST_VERBOSE === "true" });
+  const app = await buildApp(deps, {
+    logger: opts.logSink
+      ? { level: "trace", stream: opts.logSink }
+      : process.env.SCP_TEST_VERBOSE === "true"
+  });
   await app.ready();
   return {
     app,
@@ -176,9 +195,12 @@ export async function listenTestServer(
     role?: "all" | "api" | "worker";
     /** See `buildTestServer`'s option of the same name. */
     operatorDatabaseUrl?: string;
+    /** See `buildTestServer`'s option of the same name. */
+    logSink?: { write(line: string): unknown };
   } = {}
 ): Promise<ListeningTestServer> {
   const server = await buildTestServer({
+    ...(opts.logSink ? { logSink: opts.logSink } : {}),
     ...(opts.operatorToken ? { operatorToken: opts.operatorToken } : {}),
     ...(opts.operatorDatabaseUrl ? { operatorDatabaseUrl: opts.operatorDatabaseUrl } : {}),
     ...(opts.federationRole ? { federationRole: opts.federationRole } : {}),

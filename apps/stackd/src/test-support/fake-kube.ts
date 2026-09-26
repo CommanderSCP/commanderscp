@@ -242,6 +242,17 @@ export class FakeKube implements KubeTransport {
       };
       delete applied["stringData"];
     }
+    // SERVER-SIDE APPLY OWNS FIELDS PER MANAGER. Modelled only where the controller relies on it:
+    // a credential key is applied under its own manager (M29.5, `credentialFieldManager`), so a
+    // Secret's other keys — another manager's — survive the apply.
+    const manager = new URL(req.path, "https://fake").searchParams.get("fieldManager") ?? "";
+    if (applied.kind === "Secret" && prev && manager.startsWith("scp-stackd-credential.")) {
+      applied["data"] = {
+        ...((prev["data"] as Record<string, string> | undefined) ?? {}),
+        ...((applied["data"] as Record<string, string> | undefined) ?? {})
+      };
+    }
+    this.managers.push({ kind: resource.kind, name: parsed.name!, manager });
     const prevGen = Number(
       (prev?.metadata as { generation?: number } | undefined)?.generation ?? 0
     );
@@ -266,6 +277,8 @@ export class FakeKube implements KubeTransport {
 
   /** Merge patches received, in order. */
   readonly merges: { kind: string; name: string; body: string }[] = [];
+  /** The field manager of every server-side apply, in order. */
+  readonly managers: { kind: string; name: string; manager: string }[] = [];
   private uids = 0;
 
   applied(): RecordedCall[] {
