@@ -2410,6 +2410,9 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
   - **M29.7 — the standing proof.** A fresh kind cluster goes from `scp install` to an image build, a canary that advances
     through its steps, and an infra plan and apply, **with no command addressed to any backend**. It runs **twice**: fresh,
     and upgrading from the previous published release. This is the first run of every M28 lane against real controllers.
+    - It includes a **second kind cluster registered as a target**, so Argo Rollouts' install into a real remote cluster
+      and the "handed over once healthy" path are proved against real controllers (M29.3 proved them only with an
+      unreachable cluster plus unit tests).
     - **DoD:** the job is in CI (nightly and on stack-touching PRs), and removing any lane's wiring makes it red.
   - **M29.8 — the stack stays current (proposal §9).**
     - **(a) Foundation — DONE (2026-09-25).** `tools/vendor-refresh` fetches each of the five backends'
