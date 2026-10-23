@@ -95,7 +95,10 @@ STACK_REGISTRY_HOST_PORT="${SCP_KIND_STACK_REGISTRY_PORT:-5001}"
 REGISTRY_IMAGE="${SCP_KIND_REGISTRY_IMAGE:-registry:2}"
 # Images pushed into that registry, as <local ref>=<path in the registry>. M29.2 adds what the WIRING
 # suite installs for real: Argo CD (+ Dex, Valkey), Argo Workflows (+ the argoexec every workflow pod
-# runs, and alpine for the trivial step) and Gitea — each already mirrored (tools/ci-mirror).
+# runs, and alpine for the trivial step) and Gitea — each already mirrored (tools/ci-mirror). M29.3
+# adds Argo Rollouts, and the canary suite's two releases of one app: TWO DIFFERENT images under one
+# repository (a canary advances only when the pod template's image digest changes), both long-lived
+# servers with no arguments (an authored Rollout's container carries none) and both already mirrored.
 STACK_IMAGES="${SCP_KIND_STACK_IMAGES:-quay.io/argoproj/argo-events:v1.9.10=argoproj/argo-events:v1.9.10 \
 quay.io/argoproj/argocd:v3.4.5=argoproj/argocd:v3.4.5 \
 ghcr.io/dexidp/dex:v2.45.0=dexidp/dex:v2.45.0 \
@@ -104,7 +107,10 @@ quay.io/argoproj/argocli:v4.0.7=argoproj/argocli:v4.0.7 \
 quay.io/argoproj/workflow-controller:v4.0.7=argoproj/workflow-controller:v4.0.7 \
 quay.io/argoproj/argoexec:v4.0.7=argoproj/argoexec:v4.0.7 \
 docker.gitea.com/gitea:1.26.1-rootless=gitea/gitea:1.26.1-rootless \
-alpine:3.20=library/alpine:3.20}"
+alpine:3.20=library/alpine:3.20 \
+quay.io/argoproj/argo-rollouts:v1.10.0=argoproj/argo-rollouts:v1.10.0 \
+registry:2=scp-canary/app:v1 \
+valkey/valkey:8-alpine=scp-canary/app:v2}"
 STACKD_NAMESPACE="${SCP_KIND_STACKD_NAMESPACE:-scp-stackd-harness}"
 STACKD_RELEASE="scp"
 # The controller's RELEASE namespace — where scpd would run. Distinct from STACKD_NAMESPACE, as the

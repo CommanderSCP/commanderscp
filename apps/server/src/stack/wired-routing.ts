@@ -1,8 +1,13 @@
 import { sql } from "drizzle-orm";
-import { StackWireableBackendSchema, type StackWireableBackend } from "@scp/schemas";
+import {
+  StackWireableBackendSchema,
+  type ArgoCdAuthoring,
+  type StackWireableBackend
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { conflict } from "../errors.js";
 import { decryptSecretValue } from "../secrets/crypto.js";
+import { readStackAuthoringAsTenant, stackAuthoringDocument } from "./authoring.js";
 
 /**
  * HOW A STANDARD STACK REGISTRATION IS ROUTED (M29.2, ADR-0061) — the read half of
@@ -104,6 +109,28 @@ export async function registrationOf(
   return backend !== undefined && isWireableBackend(backend) ? backend : null;
 }
 
+/**
+ * The deploy lane's question: is this execution system the stack's Argo CD, and if so what is its
+ * authoring? `registration: false` means an ordinary, tenant-registered system — the caller reads
+ * `properties.authoring` as ADR-0055 always has. For a registration the properties are never read.
+ */
+export async function registeredArgoCdAuthoring(
+  tx: TenantTx,
+  orgId: string,
+  systemId: string
+): Promise<{ registration: false } | { registration: true; authoring: ArgoCdAuthoring | null }> {
+  const backend = await registrationOf(tx, orgId, systemId);
+  if (backend === null) return { registration: false };
+  if (backend !== "argocd") return { registration: true, authoring: null };
+  return {
+    registration: true,
+    authoring: stackAuthoringDocument(
+      await readStackAuthoringAsTenant(tx),
+      await readWiringsAsTenant(tx)
+    )
+  };
+}
+
 // ---- routing a stack-registered system ----------------------------------------------------------
 
 export interface StackWiredRouting {
@@ -160,13 +187,20 @@ export async function stackWiredRouting(
     { ciphertext: tok.ciphertext, nonce: tok.nonce, keyVersion: tok.key_version },
     masterKey
   );
+  // M29.3 (ADR-0062): the registered Argo CD's `authoring` — derived from the controller's
+  // hand-off and release constants, never the object's properties (which carry none).
+  const authoring =
+    backend === "argocd"
+      ? stackAuthoringDocument(await readStackAuthoringAsTenant(tx), await readWiringsAsTenant(tx))
+      : null;
   return {
     backend,
     pluginModule: REGISTRATION_KIND[backend],
     config: {
       serverUrl: wiring.serverUrl,
       ...(wiring.namespace ? { namespace: wiring.namespace } : {}),
-      tokenSecretKey: STACK_TOKEN_SECRET_FIELD
+      tokenSecretKey: STACK_TOKEN_SECRET_FIELD,
+      ...(authoring ? { authoring } : {})
     },
     secrets: { [STACK_TOKEN_SECRET_FIELD]: token },
     allowedHosts: [new URL(wiring.serverUrl).hostname],

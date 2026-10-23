@@ -50,7 +50,7 @@ describe("the stack controller's inputs", () => {
     expect(ctor.replace(/\s/g, "")).toBe("{baseUrl}");
   });
 
-  it("calls exactly four API operations: the spec read, the status write, the wiring hand-off and its withdrawal", () => {
+  it("calls exactly six API operations: the spec read, the status write, the wiring hand-off and its withdrawal, the authoring hand-off and its withdrawal", () => {
     const calls = new Set<string>();
     for (const s of sources) {
       for (const m of code(s.text).matchAll(/client\.(\w+)\.(\w+)\(/g))
@@ -58,7 +58,9 @@ describe("the stack controller's inputs", () => {
       for (const m of code(s.text).matchAll(/client\.(\w+)\(/g)) calls.add(m[1]!);
     }
     expect([...calls].sort()).toEqual([
+      "stack.deleteAuthoring",
       "stack.deleteWiring",
+      "stack.putAuthoring",
       "stack.putStatus",
       "stack.putWiring",
       "stack.spec"
@@ -89,8 +91,25 @@ describe("the stack controller's inputs", () => {
       )
       .map((s) => s.file)
       .sort();
-    // controller.ts constructs it; wiring.ts is its only caller.
-    expect(users).toEqual(["controller.ts", "wiring.ts"]);
+    // controller.ts constructs it; wiring.ts and (M29.3) authoring.ts are its only callers.
+    expect(users).toEqual(["authoring.ts", "controller.ts", "wiring.ts"]);
+    // authoring.ts reaches exactly two endpoints, both from the render: Gitea's (every Gitea call
+    // goes through `gitea()`, whose base is `giteaEp.serverUrl`) and Argo CD's.
+    const authoring = code(sources.find((s) => s.file === "authoring.ts")!.text);
+    const aUrls = [...authoring.matchAll(/\burl:\s*([^,\n]+)/g)].map((m) => m[1]!.trim());
+    expect(aUrls.sort()).toEqual([
+      "`${argocdEp.serverUrl}/api/v1/clusters`",
+      "`${g.base}/api/v1${p}`"
+    ]);
+    expect(authoring).toMatch(
+      /const giteaEp = backendEndpoint\(deps\.release, "gitea", renders\("gitea"\)\)/
+    );
+    expect(authoring).toMatch(
+      /const argocdEp: BackendEndpoint = backendEndpoint\(deps\.release, "argocd", renders\("argocd"\)\)/
+    );
+    expect(authoring).toMatch(
+      /\{ http: deps\.wiring\.http, base: giteaEp\.serverUrl, auth: admin\.auth \}/
+    );
     const wiring = code(sources.find((s) => s.file === "wiring.ts")!.text);
     const urls = [...wiring.matchAll(/\burl:\s*([^,\n]+)/g)].map((m) => m[1]!.trim());
     expect(urls.length).toBeGreaterThan(5);
@@ -125,6 +144,9 @@ describe("the stack controller's inputs", () => {
       // M29.2: per backend, a sha256 and a counter (stack-spec-census) — compared with the hash of
       // facts the controller derives itself; it can make the controller re-wire, never re-point.
       "wiring",
+      // M29.3: a sha256 or null (stack-spec-census) — compared with the hash of the carrier commit
+      // and clusters the controller derives itself; it can make it hand over again, nothing else.
+      "authoring",
       "group",
       "versions",
       "replicas",

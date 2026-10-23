@@ -123,11 +123,20 @@ export const StackBackendWiringSpecSchema = z.object({
 });
 export type StackBackendWiringSpec = z.infer<typeof StackBackendWiringSpecSchema>;
 
+/** M29.3: what scpd holds of the canary authoring hand-off, as the controller may see it — a hash,
+ *  never the revision or the cluster names. */
+export const StackAuthoringSpecSchema = z.object({
+  factsSha256: Sha256HexSchema.nullable()
+});
+export type StackAuthoringSpec = z.infer<typeof StackAuthoringSpecSchema>;
+
 export const StackSpecDocumentSchema = z.object({
   settings: StackSettingsSchema,
   backends: z.array(StackBackendSpecSchema),
   integrity: z.array(StackBackendIntegritySchema),
-  wiring: z.array(StackBackendWiringSpecSchema)
+  wiring: z.array(StackBackendWiringSpecSchema),
+  /** M29.3 — absent from a pre-M29.3 scpd. */
+  authoring: StackAuthoringSpecSchema.optional()
 });
 export type StackSpecDocument = z.infer<typeof StackSpecDocumentSchema>;
 
@@ -247,6 +256,68 @@ export const PutStackWiringRequestSchema = z.strictObject({
 });
 export type PutStackWiringRequest = z.infer<typeof PutStackWiringRequestSchema>;
 
+// ---- CANARY AUTHORING (controller-written, M29.3) -----------------------------------------------
+
+/**
+ * WHERE SCP-AUTHORED DEPLOYMENTS COME FROM WHEN THE STANDARD STACK SERVES THEM (M29.3, ADR-0062).
+ * Every value is FIXED BY THE RELEASE — none is an operator value, none a tenant's: the carrier
+ * chart is pushed by the stack controller into a Gitea repository only it writes, the two Argo CD
+ * projects are the controller's, and the one namespace authored deployments land in is created by
+ * the main chart. scpd derives the whole `authoring` document from these and from the controller's
+ * hand-off (the carrier's COMMIT and the clusters Rollouts is installed in) — so nothing a tenant
+ * writes chooses the carrier repository, the project, the destination clusters or the namespaces
+ * (the M28 class). Pinned equal to the chart and the controller by tests.
+ */
+export const STACK_AUTHORING = {
+  /** The AppProject every SCP-authored Application is created in (ADR-0055 D10's shape). */
+  project: "scp-authored",
+  /** The controller's own AppProject: the Rollouts install it authors into each target cluster. */
+  stackProject: "scp-stack",
+  /** The Gitea organization and repository the controller pushes the carrier into. */
+  giteaOrg: "scp-stack",
+  giteaRepo: "scp-authored-manifests",
+  /** The carrier chart's directory in that repository. */
+  carrierPath: "scp-authored-manifests",
+  /** The Rollouts controller manifests, per target cluster, in that repository. */
+  rolloutsPath: "argo-rollouts",
+  /** The one namespace an authored deployment lands in, on every target cluster. */
+  namespace: "scp-apps"
+} as const;
+
+/** An Argo CD cluster NAME as Argo CD's own API reports it: an RFC 1123 subdomain, bounded. */
+export const StackClusterNameSchema = z
+  .string()
+  .min(1)
+  .max(253)
+  .regex(/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/);
+
+/**
+ * The controller's canary-authoring hand-off (`PUT /instance/stack/authoring`, its credential
+ * ONLY). Sent once Argo CD, Gitea and Argo Rollouts are all ready and wired, the carrier is pushed
+ * and both projects exist. Only two facts travel: the COMMIT the carrier was pushed at (Argo CD is
+ * pinned to it — a later push to the repository changes nothing it renders) and the registered
+ * clusters OTHER than in-cluster whose Rollouts install is healthy (a place naming any other cluster
+ * is refused, never rolled out where no Rollouts controller runs).
+ */
+export const PutStackAuthoringRequestSchema = z.strictObject({
+  carrierRevision: z.string().regex(/^[0-9a-f]{40}$/),
+  clusters: z.array(StackClusterNameSchema).max(64),
+  factsSha256: Sha256HexSchema
+});
+export type PutStackAuthoringRequest = z.infer<typeof PutStackAuthoringRequestSchema>;
+
+/** Canary authoring as anyone who can read the stack may see it. */
+export const StackAuthoringViewSchema = z.object({
+  configured: z.boolean(),
+  project: z.string(),
+  namespace: z.string(),
+  carrierRevision: z.string().nullable(),
+  /** Registered clusters besides in-cluster that Rollouts is installed in. */
+  clusters: z.array(z.string()),
+  configuredAt: z.string().nullable()
+});
+export type StackAuthoringView = z.infer<typeof StackAuthoringViewSchema>;
+
 // ---- THE READ MODEL -----------------------------------------------------------------------------
 
 export const StackControllerViewSchema = z.object({
@@ -292,7 +363,9 @@ export const StackViewSchema = z.object({
   backends: z.array(StackBackendViewSchema),
   /** M29.2: whether the Standard Stack serves the CALLER's organization — its wired backends are
    *  registered there as execution systems. Null on a response to a machine credential. */
-  servesThisOrg: z.boolean().nullable()
+  servesThisOrg: z.boolean().nullable(),
+  /** M29.3: canary authoring through the bundled Argo CD, Gitea and Argo Rollouts. */
+  authoring: StackAuthoringViewSchema
 });
 export type StackView = z.infer<typeof StackViewSchema>;
 

@@ -17,6 +17,7 @@ import { encryptSecretValue } from "../secrets/crypto.js";
 import { SYSTEM_ACTOR_ID } from "../coordination/system-actor.js";
 import { createObject, updateObject } from "../graph/objects-repo.js";
 import { canonicalJson } from "../util/canonical-json.js";
+import { withdrawAuthoring } from "./authoring.js";
 import {
   CALLED_BACKENDS,
   REGISTRATION_KIND,
@@ -218,6 +219,14 @@ export async function dropWiring(
   ]);
   await client.query("DELETE FROM stack_backend_tokens WHERE backend = $1", [input.backend]);
   const dropped = (res.rowCount ?? 0) > 0;
+  // M29.3: authoring stands on the Argo CD and Gitea wirings (the carrier's URL is Gitea's).
+  if (input.backend === "argocd" || input.backend === "gitea") {
+    await withdrawAuthoring(client, {
+      actor: input.actor,
+      requestId: input.requestId,
+      reason: `${input.backend} was unwired`
+    });
+  }
   if (dropped) {
     await appendInstanceAudit(client, {
       action: "stack.backend.unwire",

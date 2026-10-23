@@ -222,7 +222,9 @@ function rig(): Rig {
       deleteWiring: async (backend) => {
         events.push(`deleteWiring ${backend}`);
         withdrawals.push(backend);
-      }
+      },
+      putAuthoring: async () => undefined,
+      deleteAuthoring: async () => undefined
     },
     kube: new KubeClient(kube),
     helm: { binary: "none", version: "v0", template: async () => "" },

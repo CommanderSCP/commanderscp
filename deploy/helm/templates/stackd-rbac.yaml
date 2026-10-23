@@ -203,6 +203,51 @@ rules:
   - apiGroups: ["argoproj.io"]
     resources: ["workflowtemplates"]
     verbs: ["get", "create", "patch", "delete"]
+---
+{{/*
+M29.3 (ADR-0062) — CANARY OUT OF THE BOX. The controller applies three kinds of Argo CD object in
+Argo CD's namespace: the authoring AppProject (ADR-0055 D10's shape), its own project for the
+Rollouts installs, and one Rollouts-to-target Application per cluster registered with Argo CD. A
+Role there, argoproj.io applications and appprojects only — no Secret, no workload beyond what the
+backends' own binding already allows. And the ONE namespace authored deployments land in on this
+cluster is created here, kept on uninstall (it holds the workloads SCP deployed).
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-authoring
+  namespace: {{ .Values.stackd.authoring.argocdNamespace }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "appprojects"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-authoring
+  namespace: {{ .Values.stackd.authoring.argocdNamespace }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-authoring
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $sns }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.stackd.authoring.namespace }}
+  labels:
+    {{- include "commanderscp.stackdLabels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
 {{- range .Values.stackd.backendNamespaces }}
 ---
 apiVersion: v1

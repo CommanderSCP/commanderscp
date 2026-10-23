@@ -161,6 +161,10 @@ docker.io/valkey/valkey@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb
 quay.io/argoproj/argocli@sha256:8c141b1acd26df3de70724aedaae0ee5a7d361cdf744a1daa6a1596f205cee50  quay.io/argoproj/argocli:v4.0.7
 quay.io/argoproj/workflow-controller@sha256:8e3ca93350c18348e50cdb1899f37d672f9995d9bf51412d86dee52da22fff19  quay.io/argoproj/workflow-controller:v4.0.7
 quay.io/argoproj/argoexec@sha256:eb2a7ca4d678a0c8c4f2de44f815f02d9eb12ac4609855f897744139aef220b4  quay.io/argoproj/argoexec:v4.0.7
+# M29.3 — the REAL Rollouts controller the canary suite (apps/server `stack-canary.kind.test.ts`)
+# walks a canary on, installed by the stack controller like the rest. The tag is the helm-bundled
+# chart's own (`bundledExecutor.argoRollouts.image`).
+quay.io/argoproj/argo-rollouts@sha256:187630ba722846bb8e079630364d3c29c8246a256be95785fd957b088f621c4e  quay.io/argoproj/argo-rollouts:v1.10.0
 
 # --- The root Dockerfile's Node base image (consumer form 4) --------------------------------------
 # Found 2026-08-31 by the census the E2E blackhole steps now enforce: `FROM node:22-trixie-slim`

@@ -247,6 +247,10 @@ export class FakeKube implements KubeTransport {
     );
     const specChanged = JSON.stringify(prev?.["spec"]) !== JSON.stringify(applied["spec"]);
     const stored: KubeObject = {
+      // Server-side apply leaves fields another manager owns — a controller's `status` — alone.
+      ...(prev?.["status"] !== undefined && applied["status"] === undefined
+        ? { status: prev["status"] }
+        : {}),
       ...applied,
       metadata: {
         ...applied.metadata,

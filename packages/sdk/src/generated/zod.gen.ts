@@ -7291,7 +7291,15 @@ export const zGetStackResponse = z.object({
             rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
     })),
-    servesThisOrg: z.boolean().nullable()
+    servesThisOrg: z.boolean().nullable(),
+    authoring: z.object({
+        configured: z.boolean(),
+        project: z.string(),
+        namespace: z.string(),
+        carrierRevision: z.string().nullable(),
+        clusters: z.array(z.string()),
+        configuredAt: z.string().nullable()
+    })
 });
 
 /**
@@ -7361,7 +7369,15 @@ export const zPutStackBackendResponse = z.object({
             rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
     })),
-    servesThisOrg: z.boolean().nullable()
+    servesThisOrg: z.boolean().nullable(),
+    authoring: z.object({
+        configured: z.boolean(),
+        project: z.string(),
+        namespace: z.string(),
+        carrierRevision: z.string().nullable(),
+        clusters: z.array(z.string()),
+        configuredAt: z.string().nullable()
+    })
 });
 
 /**
@@ -7431,7 +7447,15 @@ export const zPurgeStackBackendResponse = z.object({
             rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
     })),
-    servesThisOrg: z.boolean().nullable()
+    servesThisOrg: z.boolean().nullable(),
+    authoring: z.object({
+        configured: z.boolean(),
+        project: z.string(),
+        namespace: z.string(),
+        carrierRevision: z.string().nullable(),
+        clusters: z.array(z.string()),
+        configuredAt: z.string().nullable()
+    })
 });
 
 /**
@@ -7501,7 +7525,15 @@ export const zPutStackSettingsResponse = z.object({
             rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
     })),
-    servesThisOrg: z.boolean().nullable()
+    servesThisOrg: z.boolean().nullable(),
+    authoring: z.object({
+        configured: z.boolean(),
+        project: z.string(),
+        namespace: z.string(),
+        carrierRevision: z.string().nullable(),
+        clusters: z.array(z.string()),
+        configuredAt: z.string().nullable()
+    })
 });
 
 /**
@@ -7571,7 +7603,15 @@ export const zRequestStackUpgradeResponse = z.object({
             rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
     })),
-    servesThisOrg: z.boolean().nullable()
+    servesThisOrg: z.boolean().nullable(),
+    authoring: z.object({
+        configured: z.boolean(),
+        project: z.string(),
+        namespace: z.string(),
+        carrierRevision: z.string().nullable(),
+        clusters: z.array(z.string()),
+        configuredAt: z.string().nullable()
+    })
 });
 
 /**
@@ -7643,7 +7683,15 @@ export const zGetStackDiagnosticsResponse = z.object({
                 rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
             }).nullable()
         })),
-        servesThisOrg: z.boolean().nullable()
+        servesThisOrg: z.boolean().nullable(),
+        authoring: z.object({
+            configured: z.boolean(),
+            project: z.string(),
+            namespace: z.string(),
+            carrierRevision: z.string().nullable(),
+            clusters: z.array(z.string()),
+            configuredAt: z.string().nullable()
+        })
     }),
     backends: z.array(z.object({
         backend: z.enum([
@@ -7703,7 +7751,10 @@ export const zGetStackSpecResponse = z.object({
         ]),
         factsSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
         rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
-    }))
+    })),
+    authoring: z.object({
+        factsSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable()
+    }).optional()
 });
 
 /**
@@ -7720,6 +7771,16 @@ export const zDeleteStackWiringResponse = z.void();
  * Success
  */
 export const zPutStackWiringResponse = z.void();
+
+/**
+ * Success
+ */
+export const zDeleteStackAuthoringResponse = z.void();
+
+/**
+ * Success
+ */
+export const zPutStackAuthoringResponse = z.void();
 
 /**
  * Success
@@ -7788,7 +7849,15 @@ export const zRotateStackBackendResponse = z.object({
             rotationGeneration: z.int().gte(0).lte(9007199254740991).nullable()
         }).nullable()
     })),
-    servesThisOrg: z.boolean().nullable()
+    servesThisOrg: z.boolean().nullable(),
+    authoring: z.object({
+        configured: z.boolean(),
+        project: z.string(),
+        namespace: z.string(),
+        carrierRevision: z.string().nullable(),
+        clusters: z.array(z.string()),
+        configuredAt: z.string().nullable()
+    })
 });
 
 /**

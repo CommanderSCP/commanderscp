@@ -237,6 +237,23 @@ export class KubeClient {
     return res.status === 404 ? "absent" : "deleted";
   }
 
+  /** Objects of one kind in one namespace carrying `labelSelector` (M29.3: the controller's own
+   *  Rollouts-to-target Applications, to prune those whose cluster is gone). */
+  async list(ref: Omit<ObjectRef, "name">, labelSelector: string): Promise<KubeObject[]> {
+    let path: string;
+    try {
+      path = await this.pathFor({ ...ref, name: "" }, { collection: true });
+    } catch (err) {
+      if (err instanceof KubeError && err.status === 404) return [];
+      throw err;
+    }
+    const res = await this.call({
+      method: "GET",
+      path: `${path}?labelSelector=${encodeURIComponent(labelSelector)}`
+    });
+    return (JSON.parse(res.body) as { items?: KubeObject[] }).items ?? [];
+  }
+
   async listPods(namespace: string): Promise<KubeObject[]> {
     const res = await this.call({
       method: "GET",

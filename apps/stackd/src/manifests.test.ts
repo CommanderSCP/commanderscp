@@ -12,6 +12,8 @@ import { assertStackSet, refViolation, STACK_KINDS } from "./manifests.js";
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+/** M29.3: granted for `authoring.ts` alone (see the test below). */
+const AUTHORING_RESOURCES = new Set(["argoproj.io/applications", "argoproj.io/appprojects"]);
 const RBAC = readFileSync(
   path.join(HERE, "../../../deploy/helm/templates/stackd-rbac.yaml"),
   "utf8"
@@ -65,8 +67,23 @@ describe("the kinds a stack backend may contain", () => {
     const allowed = new Set(STACK_KINDS.map((k) => `${k.group}/${plural(k.kind)}`));
     for (const [resource, verbs] of grants()) {
       if (!verbs.has("create") && !verbs.has("patch")) continue;
+      if (AUTHORING_RESOURCES.has(resource)) continue;
       expect(allowed.has(resource), `${resource} is granted but not in STACK_KINDS`).toBe(true);
     }
+  });
+
+  it("M29.3: the Argo CD kinds canary authoring applies are granted ONLY by the authoring Role, in Argo CD's namespace", () => {
+    // Not stack-backend kinds (no backend's render contains one; `assertStackSet` still refuses
+    // them in a render): `authoring.ts` applies the two AppProjects and the Rollouts-to-target
+    // Applications, and nothing else of argoproj.io but a catalog WorkflowTemplate.
+    const role = RBAC.slice(RBAC.indexOf("name: {{ $name }}-authoring"));
+    const block = role.slice(0, role.indexOf("---"));
+    expect(block).toMatch(/namespace: \{\{ \.Values\.stackd\.authoring\.argocdNamespace \}\}/);
+    expect(block).toMatch(/resources: \["applications", "appprojects"\]/);
+    const elsewhere = RBAC.replace(block, "");
+    expect(elsewhere).not.toMatch(/"applications"|"appprojects"/);
+    for (const k of STACK_KINDS)
+      expect(k.kind === "Application" || k.kind === "AppProject").toBe(false);
   });
 
   it("refuses a kind outside the list, a namespaced object outside the backend, and another Namespace", () => {

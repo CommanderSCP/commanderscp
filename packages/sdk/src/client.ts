@@ -332,6 +332,8 @@ import {
   // M29.2 — wiring, rotation and the organizations the stack serves (ADR-0061).
   putStackWiring as putStackWiringRequest,
   deleteStackWiring as deleteStackWiringRequest,
+  putStackAuthoring as putStackAuthoringRequest,
+  deleteStackAuthoring as deleteStackAuthoringRequest,
   rotateStackBackend as rotateStackBackendRequest,
   listStackServedOrgs as listStackServedOrgsRequest,
   attachStackServedOrg as attachStackServedOrgRequest,
@@ -560,6 +562,7 @@ import type {
   PutStackSettingsRequest,
   PutStackStatusRequest,
   PutStackWiringRequest,
+  PutStackAuthoringRequest,
   StackServedOrgList,
   InstanceOperatorGrant,
   InstanceOperatorGrantList,
@@ -2342,6 +2345,23 @@ export class ScpClient {
       const result = await deleteStackWiringRequest({
         client: this.client,
         path: { backend },
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrapVoid(result);
+    },
+    /** M29.3 — the controller's canary-authoring hand-off (its credential ONLY). */
+    putAuthoring: async (req: PutStackAuthoringRequest, operatorToken: string): Promise<void> => {
+      const result = await putStackAuthoringRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      unwrapVoid(result);
+    },
+    /** M29.3 — the controller withdraws canary authoring (its credential ONLY). */
+    deleteAuthoring: async (operatorToken: string): Promise<void> => {
+      const result = await deleteStackAuthoringRequest({
+        client: this.client,
         headers: { "x-scp-operator-token": operatorToken }
       });
       unwrapVoid(result);

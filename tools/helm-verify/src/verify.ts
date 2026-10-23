@@ -2142,7 +2142,11 @@ function verifyRender(label: string, docs: K8sDoc[]): void {
     (d) =>
       bundledNamespaces.includes(d.metadata?.namespace ?? "") &&
       !(
-        d.kind === "RoleBinding" && d.metadata?.labels?.["app.kubernetes.io/component"] === "stackd"
+        (d.kind === "RoleBinding" ||
+          // M29.3 (ADR-0062): the controller's authoring Role in Argo CD's namespace (./stackd.ts
+          // pins its rules exactly).
+          (d.kind === "Role" && /-stackd-authoring$/.test(d.metadata?.name ?? ""))) &&
+        d.metadata?.labels?.["app.kubernetes.io/component"] === "stackd"
       )
   );
   assert(
@@ -3062,6 +3066,37 @@ async function main(): Promise<void> {
       renderBundledChart(base).every((d) => d.kind !== "AppProject"),
       "[authoring] authoring disabled must render no AppProject"
     );
+    // M29.3 (ADR-0062): the STACK CONTROLLER's shape — the grant on exactly the release's project,
+    // and no AppProject rendered (the controller applies it, with every registered cluster).
+    const grantOnly = [
+      ...base,
+      "--set",
+      "bundledExecutor.argocd.authoring.project=scp-authored",
+      "--set",
+      "bundledExecutor.argocd.authoring.grantOnly=true"
+    ];
+    const grantDocs = renderBundledChart(grantOnly);
+    verifyScpArgoCdGrants(grantDocs, "authoring grantOnly", "scp-authored");
+    assert(
+      grantDocs.every((d) => d.kind !== "AppProject"),
+      "[authoring grantOnly] the stack controller's shape must render no AppProject"
+    );
+    {
+      let refused = false;
+      try {
+        renderRaw(BUNDLED_CHART_DIR, "scp-bundled", [
+          ...grantOnly,
+          "--set",
+          "bundledExecutor.argocd.authoring.project=default"
+        ]);
+      } catch (err) {
+        refused = /ADR-0055/.test(String((err as { stderr?: unknown }).stderr ?? err));
+      }
+      assert(
+        refused,
+        "[authoring grantOnly] a grant on the unscoped default project must be REFUSED"
+      );
+    }
     // Every unscoped configuration is REFUSED at render, not rendered and trusted.
     const refusals: [string, string[]][] = [
       [

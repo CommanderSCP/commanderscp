@@ -252,9 +252,23 @@ export async function startArgoCdStandIn(): Promise<ArgoCdStandIn> {
         const name = decodeURIComponent(appMatch[1]!);
         const sub = appMatch[2] ?? "";
         const app = applications.get(name);
+        const project = url.searchParams.get("project");
+        if (sub === "" && method === "GET") {
+          // REAL ARGO CD (measured on kind, M29.3): a GET of an Application that does not exist is a
+          // 403 "permission denied" unless the caller names its `project` — Argo CD will not say
+          // whether a name exists to someone it cannot place in a project. With `?project=`, a
+          // missing Application, or one in another project, is a 404.
+          if (!app) {
+            return project
+              ? send(404, { message: `applications.argoproj.io "${name}" not found` })
+              : send(403, { message: "permission denied" });
+          }
+          if (project && app.spec?.project !== project) {
+            return send(404, { message: `applications.argoproj.io "${name}" not found` });
+          }
+          return send(200, app);
+        }
         if (!app) return send(404, { message: `applications.argoproj.io "${name}" not found` });
-
-        if (sub === "" && method === "GET") return send(200, app);
 
         if (sub === "/sync" && method === "POST") {
           // ARGO CD'S CONTROLLER: apply what the carrier chart renders.

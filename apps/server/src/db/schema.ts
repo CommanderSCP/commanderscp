@@ -2735,9 +2735,21 @@ export const stackSettings = pgTable(
     controllerCredentialId: uuid("controller_credential_id"),
     /** M29.2 — true once the bootstrap organization has been served by default (on the first
      *  wiring). Never set back: an operator who detaches it later is not overruled. */
-    servedOrgsInitialized: boolean("served_orgs_initialized").notNull().default(false)
+    servedOrgsInitialized: boolean("served_orgs_initialized").notNull().default(false),
+    /** M29.3 (ADR-0062) — the stack controller's canary-authoring hand-off: the carrier COMMIT it
+     *  pushed into the bundled Gitea, and the registered clusters (besides in-cluster) its Rollouts
+     *  install is healthy in. Null revision = authoring is not configured, and a component asking
+     *  for a canary is refused. Written only by the controller's credential. */
+    authoringRevision: text("authoring_revision"),
+    authoringClusters: jsonb("authoring_clusters").notNull().default([]),
+    authoringFactsSha256: text("authoring_facts_sha256"),
+    authoringConfiguredAt: timestamp("authoring_configured_at", { withTimezone: true })
   },
   (t) => [
+    check(
+      "stack_settings_authoring_revision_ck",
+      sql`${t.authoringRevision} IS NULL OR ${t.authoringRevision} ~ '^[0-9a-f]{40}$'`
+    ),
     check("stack_settings_singleton_ck", sql`${t.id} = 'instance'`),
     check("stack_settings_update_policy_ck", sql`${t.updatePolicy} IN ('automatic', 'manual')`),
     check("stack_settings_upgrade_generation_ck", sql`${t.upgradeGeneration} >= 0`)

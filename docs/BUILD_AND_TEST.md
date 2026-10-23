@@ -2347,6 +2347,42 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     - A component requesting a canary where authoring is off is **refused with a Decision**, never rolled silently.
     - **DoD:** a component's canary advances through its steps on a real Rollouts controller in kind; disabling authoring
       produces the refusal Decision rather than a plain rolling update.
+    - **State (2026-09-25, ADR-0062): BUILT, PR open.** With Argo Rollouts, Argo CD and Gitea enabled,
+      the controller's stack-level step (`apps/stackd/src/authoring.ts`, `afterStack`) pushes the
+      carrier chart and the Rollouts install into `scp-stack/scp-authored-manifests` in the bundled
+      Gitea (pinned by COMMIT — a push by anyone else changes nothing Argo CD renders, and is
+      overwritten), applies the authoring AppProject `scp-authored` (ADR-0055 D10's shape over every
+      target cluster) and its own `scp-stack` project, authors a Rollouts-to-target Application for
+      every cluster registered with Argo CD besides in-cluster (in-cluster's controller is the stack's
+      own `argo-rollouts` backend), and hands scpd the commit plus the clusters whose install is
+      healthy (`PUT /instance/stack/authoring`, controller credential only; drizzle/0130). scpd DERIVES
+      the registered Argo CD's `authoring` from that and `STACK_AUTHORING` constants — never from the
+      object's properties; the SCP account's create/update grant rides Argo CD's render
+      (`authoring.grantOnly`). Disabling any of the three, or unwiring Argo CD/Gitea, withdraws it in
+      the same transaction. At a deploy trigger, a rollout requested (a component D12 declaration or a
+      wave-plan rollout) that nothing can author is refused `rollout_not_authored` — the census of
+      `deployLaneTriggerParameters` found two silent paths (a non-argocd executor; argocd with no
+      `properties.deployment`). How each DoD item is proved:
+      - *a canary advances through its steps on a real Rollouts controller in kind, through the API
+        alone*: `apps/server/src/stack/stack-canary.kind.test.ts` (job 4e) — three switches through
+        the API; release 1 goes Healthy; release 2 is watched on the real controller Healthy:3 →
+        Paused:1 → Progressing:2 → Healthy:3, and SCP finishes the change only then.
+      - *disabling authoring produces the refusal Decision rather than a rolling update*: the same
+        suite (release 3 refused `no_authoring`, Rollout image unchanged) and
+        `stack-authoring.integration.test.ts`.
+      - *deleting any wiring step turns a test red*: mutation log in the PR — carrier push,
+        authoring project, Rollouts-to-target Application, hand-off, the Argo CD grant, the
+        derivation, the withdrawal, the refusal.
+      - **Found on the way**: real Argo CD answers a GET of a missing Application with 403 unless
+        `?project=` is named, so the M28.4 plugin could never CREATE an authored Application against
+        a real Argo CD (its stand-in answered 404); fixed in `@scp/plugin-argocd` and the stand-in now
+        models it. Gitea's multi-file contents API echoes every file (MBs with the Rollouts CRDs).
+      - **What the DoD does not prove**: the kind cluster is the only cluster, so a Rollouts-to-target
+        Application is proved authored, admitted by the stack project and not handed over while
+        unhealthy (an unreachable registered cluster) — not installing Rollouts on a real second
+        cluster; the handed-over-once-healthy path is `authoring.test.ts` against reported status.
+        Argo CD reads the public carrier anonymously (a Gitea with `REQUIRE_SIGNIN_VIEW` would need
+        a repository credential — not built).
   - **M29.4 — the stack controller and the Stack page** (the foundation: E1–E4).
     - The desired-state API, and `scp stack status|enable|disable|upgrade|diagnostics`. IaC parity is **N/A**: this is
       instance-scoped operator configuration, like the other instance-level operator settings, not org data a stack

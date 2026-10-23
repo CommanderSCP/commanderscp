@@ -9,11 +9,13 @@ import type { ControllerDeps, StackApi } from "./reconcile.js";
 import { StateStore } from "./state.js";
 import { deriveBackendValues } from "./values.js";
 import { unwireBackend, wireBackend } from "./wiring.js";
+import { reconcileAuthoring } from "./authoring.js";
 
 /**
  * Assembling a controller from its configuration. The ONLY API client it builds is below, and it
- * uses exactly four operations — the spec read, the status write, and (M29.2) the wiring hand-off
- * and its withdrawal — with the install-time credential and no session:
+ * uses exactly six operations — the spec read, the status write, (M29.2) the wiring hand-off and
+ * its withdrawal, and (M29.3) the canary-authoring hand-off and its withdrawal — with the
+ * install-time credential and no session:
  * `controller-inputs.test.ts` holds the controller's sources to that.
  */
 
@@ -23,7 +25,9 @@ export function stackApiFor(baseUrl: string, operatorCredential: string): StackA
     spec: () => client.stack.spec(operatorCredential),
     putStatus: (req) => client.stack.putStatus(req, operatorCredential),
     putWiring: (backend, req) => client.stack.putWiring(backend, req, operatorCredential),
-    deleteWiring: (backend) => client.stack.deleteWiring(backend, operatorCredential)
+    deleteWiring: (backend) => client.stack.deleteWiring(backend, operatorCredential),
+    putAuthoring: (req) => client.stack.putAuthoring(req, operatorCredential),
+    deleteAuthoring: () => client.stack.deleteAuthoring(operatorCredential)
   };
 }
 
@@ -152,6 +156,8 @@ export function installWiringHooks(
   deps.wiring ??= wiring;
   deps.afterReady ??= (backend, objects, ctx) => wireBackend(deps, backend, objects, ctx);
   deps.unwire ??= (backend, ctx) => unwireBackend(deps, backend, ctx);
+  // M29.3 (ADR-0062): canary out of the box, after every backend of the tick.
+  deps.afterStack ??= (input) => reconcileAuthoring(deps, input);
   return deps;
 }
 
