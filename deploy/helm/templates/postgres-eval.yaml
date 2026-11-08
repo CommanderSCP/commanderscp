@@ -89,25 +89,13 @@ spec:
         app.kubernetes.io/component: postgres-eval
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
-        seccompProfile:
-          type: RuntimeDefault
+        {{- toYaml .Values.postgres.evalInCluster.podSecurityContext | nindent 8 }}
       containers:
         - name: postgres
           image: "postgres:16"
           imagePullPolicy: IfNotPresent
           securityContext:
-            allowPrivilegeEscalation: false
-            # postgres itself needs to write its data dir — read-only rootfs stays on for every
-            # OTHER path via an explicit writable emptyDir for /tmp and PGDATA lives on the PVC.
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-            seccompProfile:
-              type: RuntimeDefault
+            {{- toYaml .Values.postgres.evalInCluster.containerSecurityContext | nindent 12 }}
           env:
             - name: POSTGRES_USER
               value: {{ .Values.postgres.adminUser | quote }}

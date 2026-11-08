@@ -293,6 +293,28 @@ postgres:
       requests:
         memory: 256Mi
         cpu: 50m
+    # Pod- and container-level securityContext for the eval Postgres. The defaults are the hardened
+    # baseline this chart has always rendered here. You may extend them: Helm deep-merges values
+    # maps, so setting a single extra key keeps every default below. Example: on a host whose
+    # AppArmor profile blocks Postgres's in-container signals (crash recovery then hangs with
+    # "could not signal for checkpoint: Permission denied"), set only
+    # `podSecurityContext: {appArmorProfile: {type: Unconfined}}`.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 999
+      runAsGroup: 999
+      fsGroup: 999
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      # postgres itself needs to write its data dir — read-only rootfs stays on for every
+      # OTHER path via an explicit writable emptyDir for /tmp and PGDATA lives on the PVC.
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault
 
 # -------------------------------------------------------------------------------------------
 # Object storage — filesystem/PVC provider default (DESIGN §16); S3-compatible configurable.
