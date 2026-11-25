@@ -264,7 +264,9 @@ Two loops are needed: one that keeps **our release** current, and one that gets 
    itself** (Mode C, `managed-dep`), delivered as a PR or an auto-merge per subscription (ADR-0032). The CommanderSCP repo is
    registered as a service on SCP's own commander, with one component per vendored backend. Each backend gets a dependency
    subscription on its upstream line, patch-only or minor-plus-patch per 4 below. This is SCP keeping SCP current, the
-   charter's *CommanderSCP Managing CommanderSCP*, and no separate bot is needed. What M21 needs added:
+   charter's *CommanderSCP Managing CommanderSCP*, and no separate bot is needed. *(Narrowed 2026-11-25: Renovate now
+   owns everything outside the vendored stack. See [renovate.md](renovate.md) and BUILD_AND_TEST.md M29.8(c).)* What M21
+   needs added:
    - **A re-vendor bump strategy.** A new Argo CD version can change CRDs and RBAC in the vendored `install.yaml`, not only
      image tags, so a tag-string edit can pass CI and still break a real controller. Components that vendor an upstream
      install declare a bump strategy that runs `tools/vendor-refresh`: fetch the tag's full manifests, pin every image by
