@@ -2485,6 +2485,35 @@ be deferred to a successor**; if one cannot be delivered, stop and ask.*
     - **DoD:** a real upstream patch release produces a SCP-authored re-vendor PR that passes CI including M29.7's upgrade
       run; deleting a vendored image from the reader's reach turns the reader test red; a synthetic fixable CRITICAL
       blocks publish. *(M29.7 and the scan-triggered/release-gate halves are (b)'s to prove — not re-derived here.)*
+    - **(c) Renovate for everything outside the vendored stack — PROPOSED 2026-11-25** ([proposals/renovate.md](proposals/renovate.md)
+      Part A). Owner direction: Renovate is our update mechanism, self-hosted in GitHub Actions. It owns npm, Dockerfiles,
+      Actions, `tools/*` pins and non-stack CI images. The five vendored backends and the stack's images stay with
+      `re-vendor` ((a)/(b)), which supersedes zero-to-running §9.1's "no separate bot". The boundary is a **file**
+      boundary, because delegation detection honours only `includePaths`. Shared image files (`images.list`,
+      `bundle-images.ts`) are split **before** (b)'s default-on subscriptions, so SCP's own enablement is not refused.
+      - **DoD:** a scheduled `renovate.yml` (pinned image, GitHub App credential, the only egressing workflow) opens a PR
+        that passes `ci.yml` including `pnpm gen` drift. A standing offline census proves that no Renovate-owned file holds a
+        stack image, and adding one turns it red. SCP's own `scp-managed-dep` enablement for the stack components still
+        succeeds with Renovate active.
+
+### M30 — Renovate in the Standard Stack — **PROPOSED 2026-11-25**
+
+*Owner direction 2026-11-25: bundle Renovate for customers. Design: [proposals/renovate.md](proposals/renovate.md)
+Part B. Needs owner approval of the charter amendment text (§4) and answers to R3–R6, including an AGPL-3.0 check,
+before build. Depends on M29.2, M29.4 and M29.5.*
+
+- Renovate is a sixth Standard Stack backend, installed by `scp-stackd`, running as an Argo Workflows `CronWorkflow`
+  (no new stateful service). It is BYO/importable, and on by role (proposed: commander on, outpost/retrans off).
+- Forge and datasource credentials arrive through M29.5's write-only passthrough. Outposts use domain mirrors via
+  `hostRules`.
+- Dependency subscriptions (ADR-0032) stay the desired-state surface. SCP renders them into a stack-managed Renovate
+  preset plus per-repo config, and observes Renovate PRs as governed Changes, with merge decided by SCP's control rather
+  than Renovate's automerge.
+- `scp-managed-dep` remains for `re-vendor` and for orgs without Renovate. Gate 1 refusal on Renovate-covered repos is
+  unchanged.
+- **DoD:** (to be fixed at approval) a fresh install's commander opens a Renovate PR against a Gitea repo with no
+  command addressed to Renovate; the PR appears as a Change, and merge is blocked until SCP's control passes; removing
+  Renovate's wiring turns M29.7's standing proof red.
 
 ## 9. Verification Mapping
 
